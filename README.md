@@ -101,6 +101,9 @@ All tools accept PDF sources in multiple formats:
 
 Extract text content with LLM-optimized formatting (paragraph detection, multi-column reordering, watermark removal).
 
+<details>
+<summary>Example & Parameters</summary>
+
 ```json
 {
   "sources": [{ "path": "/documents/report.pdf" }],
@@ -108,9 +111,6 @@ Extract text content with LLM-optimized formatting (paragraph detection, multi-c
   "include_metadata": true
 }
 ```
-
-<details>
-<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -127,14 +127,14 @@ Extract text content with LLM-optimized formatting (paragraph detection, multi-c
 
 Extract PDF bookmarks / table of contents.
 
+<details>
+<summary>Example, Parameters & Response</summary>
+
 ```json
 {
   "sources": [{ "path": "/documents/book.pdf" }]
 }
 ```
-
-<details>
-<summary>Parameters & Response</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -167,14 +167,14 @@ Extract PDF bookmarks / table of contents.
 
 Extract PDF metadata (author, title, dates, etc.) without loading full content.
 
+<details>
+<summary>Example & Parameters</summary>
+
 ```json
 {
   "sources": [{ "path": "/documents/report.pdf" }]
 }
 ```
-
-<details>
-<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -188,6 +188,9 @@ Extract PDF metadata (author, title, dates, etc.) without loading full content.
 
 Extract highlights, comments, underlines, and other annotations.
 
+<details>
+<summary>Example & Parameters</summary>
+
 ```json
 {
   "sources": [{ "path": "/documents/report.pdf" }],
@@ -195,9 +198,6 @@ Extract highlights, comments, underlines, and other annotations.
   "pages": "1-5"
 }
 ```
-
-<details>
-<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -213,15 +213,15 @@ Extract highlights, comments, underlines, and other annotations.
 
 Extract hyperlinks and internal page navigation links.
 
+<details>
+<summary>Example, Parameters & Response</summary>
+
 ```json
 {
   "sources": [{ "path": "/documents/paper.pdf" }],
   "pages": "1-10"
 }
 ```
-
-<details>
-<summary>Parameters & Response</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -251,6 +251,9 @@ Extract hyperlinks and internal page navigation links.
 
 Full-text search within PDFs with surrounding context.
 
+<details>
+<summary>Example & Parameters</summary>
+
 ```json
 {
   "sources": [{ "path": "/documents/manual.pdf" }],
@@ -258,9 +261,6 @@ Full-text search within PDFs with surrounding context.
   "context_chars": 100
 }
 ```
-
-<details>
-<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -278,14 +278,14 @@ Full-text search within PDFs with surrounding context.
 
 Get page dimensions, word/char counts, token estimates, and file sizes. Useful for planning LLM context usage.
 
+<details>
+<summary>Example, Parameters & Response</summary>
+
 ```json
 {
   "sources": [{ "path": "/documents/report.pdf" }]
 }
 ```
-
-<details>
-<summary>Parameters & Response</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -324,6 +324,9 @@ Get page dimensions, word/char counts, token estimates, and file sizes. Useful f
 
 Discover PDF files in a directory with optional filtering.
 
+<details>
+<summary>Example & Parameters</summary>
+
 ```json
 {
   "directory": "/documents",
@@ -331,9 +334,6 @@ Discover PDF files in a directory with optional filtering.
   "pattern": "invoice*.pdf"
 }
 ```
-
-<details>
-<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -347,6 +347,9 @@ Discover PDF files in a directory with optional filtering.
 
 Extract specific pages from a PDF to create a new PDF.
 
+<details>
+<summary>Example, Parameters & Page Range Syntax</summary>
+
 ```json
 {
   "source": { "path": "/documents/book.pdf" },
@@ -354,9 +357,6 @@ Extract specific pages from a PDF to create a new PDF.
   "output_path": "/output/excerpt.pdf"
 }
 ```
-
-<details>
-<summary>Parameters & Page Range Syntax</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -385,6 +385,9 @@ Extract specific pages from a PDF to create a new PDF.
 
 Merge multiple PDFs into a single file.
 
+<details>
+<summary>Example & Parameters</summary>
+
 ```json
 {
   "sources": [
@@ -394,9 +397,6 @@ Merge multiple PDFs into a single file.
   "output_path": "/output/complete-book.pdf"
 }
 ```
-
-<details>
-<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -409,6 +409,9 @@ Merge multiple PDFs into a single file.
 
 Reduce PDF file size using stream optimization, object deduplication, and compression.
 
+<details>
+<summary>Example, Parameters & Response</summary>
+
 ```json
 {
   "source": { "path": "/documents/large-report.pdf" },
@@ -416,9 +419,6 @@ Reduce PDF file size using stream optimization, object deduplication, and compre
   "output_path": "/output/compressed.pdf"
 }
 ```
-
-<details>
-<summary>Parameters & Response</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -448,6 +448,9 @@ Reduce PDF file size using stream optimization, object deduplication, and compre
 
 Add password protection using 256-bit AES encryption.
 
+<details>
+<summary>Example & Parameters</summary>
+
 ```json
 {
   "source": { "path": "/documents/confidential.pdf" },
@@ -456,9 +459,6 @@ Add password protection using 256-bit AES encryption.
   "allow_copy": false
 }
 ```
-
-<details>
-<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -477,6 +477,9 @@ Add password protection using 256-bit AES encryption.
 
 Remove password protection from an encrypted PDF.
 
+<details>
+<summary>Example & Parameters</summary>
+
 ```json
 {
   "source": { "path": "/documents/protected.pdf" },
@@ -484,9 +487,6 @@ Remove password protection from an encrypted PDF.
   "output_path": "/output/unprotected.pdf"
 }
 ```
-
-<details>
-<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
