@@ -170,6 +170,16 @@ pub struct PdfPageInfo {
     ///
     /// Based on Claude/GPT tokenizer analysis. Use as rough guidance only.
     pub estimated_token_count: usize,
+    /// Number of image objects on this page
+    pub image_count: usize,
+    /// Number of annotations on this page (excluding form field widgets)
+    pub annotation_count: usize,
+    /// Number of links on this page
+    pub link_count: usize,
+    /// Number of form fields on this page
+    pub form_field_count: usize,
+    /// Form field types on this page (e.g., "text", "checkbox")
+    pub form_field_types: Vec<String>,
 }
 
 /// Extracted annotation information
@@ -193,6 +203,103 @@ pub struct PdfAnnotation {
     pub highlighted_text: Option<String>,
     /// Fill color (hex format)
     pub color: Option<String>,
+}
+
+// ============================================================================
+// Page Rendering Types
+// ============================================================================
+
+/// Rendered page image data
+#[derive(Debug, Clone)]
+pub struct RenderedPage {
+    /// Page number (1-indexed)
+    pub page: u32,
+    /// Image width in pixels
+    pub width: u32,
+    /// Image height in pixels
+    pub height: u32,
+    /// Base64-encoded PNG image data
+    pub data_base64: String,
+    /// MIME type (always "image/png")
+    pub mime_type: String,
+}
+
+// ============================================================================
+// Form Field Types
+// ============================================================================
+
+/// Information about a PDF form field
+#[derive(Debug, Clone)]
+pub struct FormFieldInfo {
+    /// Page number (1-indexed)
+    pub page: u32,
+    /// Field name
+    pub name: Option<String>,
+    /// Field type (e.g., "text", "checkbox", "radio_button", "combo_box", "list_box", "push_button", "signature", "unknown")
+    pub field_type: String,
+    /// Current value (for text fields)
+    pub value: Option<String>,
+    /// Whether checked (for checkbox/radio)
+    pub is_checked: Option<bool>,
+    /// Read-only flag
+    pub is_read_only: bool,
+    /// Required flag
+    pub is_required: bool,
+    /// Available options (for combo_box/list_box)
+    pub options: Option<Vec<FormFieldOptionInfo>>,
+    /// Type-specific properties
+    pub properties: FormFieldProperties,
+}
+
+/// Option info for combo/list box fields
+#[derive(Debug, Clone)]
+pub struct FormFieldOptionInfo {
+    /// Display label
+    pub label: Option<String>,
+    /// Whether this option is currently selected
+    pub is_selected: bool,
+}
+
+/// Type-specific form field properties
+#[derive(Debug, Clone, Default)]
+pub struct FormFieldProperties {
+    /// Whether text field is multiline
+    pub is_multiline: Option<bool>,
+    /// Whether text field is a password field
+    pub is_password: Option<bool>,
+    /// Whether combo box is editable
+    pub is_editable: Option<bool>,
+    /// Whether combo/list box allows multiple selections
+    pub is_multiselect: Option<bool>,
+}
+
+/// Value to set on a form field
+#[derive(Debug, Clone)]
+pub struct FormFieldValue {
+    /// Field name to match
+    pub name: String,
+    /// Text value (for text fields)
+    pub value: Option<String>,
+    /// Checked state (for checkbox/radio)
+    pub checked: Option<bool>,
+}
+
+/// Result of filling form fields
+#[derive(Debug, Clone)]
+pub struct FillFormResultInfo {
+    /// Number of fields successfully filled
+    pub fields_filled: u32,
+    /// Fields that could not be filled
+    pub fields_skipped: Vec<SkippedField>,
+}
+
+/// Info about a field that could not be filled
+#[derive(Debug, Clone)]
+pub struct SkippedField {
+    /// Field name
+    pub name: String,
+    /// Reason the field was skipped
+    pub reason: String,
 }
 
 /// PDF reader using PDFium
@@ -1567,6 +1674,33 @@ pub fn get_page_info(data: &[u8], password: Option<&str>) -> Result<Vec<PdfPageI
             })
             .unwrap_or((0, 0, 0));
 
+        // Count image objects on this page
+        let image_count = page
+            .objects()
+            .iter()
+            .filter(|obj| obj.as_image_object().is_some())
+            .count();
+
+        // Count annotations, links, and form fields on this page
+        let mut annotation_count = 0usize;
+        let mut form_field_count = 0usize;
+        let mut form_field_types = Vec::new();
+        for annotation in page.annotations().iter() {
+            if let Some(field) = annotation.as_form_field() {
+                form_field_count += 1;
+                let ft = format!("{:?}", field.field_type()).to_lowercase();
+                form_field_types.push(ft);
+            } else {
+                let ann_type = annotation.annotation_type();
+                // Skip popup annotations (associated with other annotations)
+                if ann_type != pdfium_render::prelude::PdfPageAnnotationType::Popup {
+                    annotation_count += 1;
+                }
+            }
+        }
+
+        let link_count = page.links().len();
+
         page_infos.push(PdfPageInfo {
             page: page_index as u32 + 1,
             width,
@@ -1576,10 +1710,372 @@ pub fn get_page_info(data: &[u8], password: Option<&str>) -> Result<Vec<PdfPageI
             char_count,
             word_count,
             estimated_token_count,
+            image_count,
+            annotation_count,
+            link_count,
+            form_field_count,
+            form_field_types,
         });
     }
 
     Ok(page_infos)
+}
+
+/// Render PDF pages as PNG images, returned as base64-encoded strings
+pub fn render_pages_to_images(
+    data: &[u8],
+    password: Option<&str>,
+    page_numbers: &[u32],
+    width: Option<u16>,
+    height: Option<u16>,
+    scale: Option<f32>,
+) -> Result<Vec<RenderedPage>> {
+    if data.len() < 4 || &data[0..4] != b"%PDF" {
+        return Err(Error::InvalidPdf {
+            reason: "Not a valid PDF file".to_string(),
+        });
+    }
+
+    let pdfium = create_pdfium()?;
+
+    let document = match password {
+        Some(pwd) => pdfium.load_pdf_from_byte_slice(data, Some(pwd)),
+        None => pdfium.load_pdf_from_byte_slice(data, None),
+    }
+    .map_err(|e| match e {
+        PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::PasswordError) => {
+            Error::PasswordRequired
+        }
+        _ => Error::Pdfium {
+            reason: format!("{}", e),
+        },
+    })?;
+
+    let pages = document.pages();
+    let page_count = pages.len() as u32;
+    let mut rendered = Vec::new();
+
+    for &page_num in page_numbers {
+        if page_num < 1 || page_num > page_count {
+            continue;
+        }
+
+        let page_index = page_num - 1;
+        let page = pages.get(page_index as u16).map_err(|e| Error::Pdfium {
+            reason: format!("Failed to get page {}: {}", page_num, e),
+        })?;
+
+        // Build render config based on parameters
+        let config = if let Some(s) = scale {
+            PdfRenderConfig::new().scale_page_by_factor(s)
+        } else if let (Some(w), Some(h)) = (width, height) {
+            PdfRenderConfig::new().set_target_size(w as i32, h as i32)
+        } else if let Some(w) = width {
+            PdfRenderConfig::new().set_target_width(w as i32)
+        } else if let Some(h) = height {
+            PdfRenderConfig::new().set_target_height(h as i32)
+        } else {
+            // Default: 1200px width
+            PdfRenderConfig::new().set_target_width(1200)
+        };
+
+        let config = config.render_form_data(true).render_annotations(true);
+
+        let bitmap = page
+            .render_with_config(&config)
+            .map_err(|e| Error::Pdfium {
+                reason: format!("Failed to render page {}: {}", page_num, e),
+            })?;
+
+        let dynamic_image = bitmap.as_image();
+        let img_width = dynamic_image.width();
+        let img_height = dynamic_image.height();
+
+        // Encode as PNG
+        let mut png_bytes = Vec::new();
+        dynamic_image
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .map_err(|e| Error::Pdfium {
+                reason: format!("Failed to encode page {} as PNG: {}", page_num, e),
+            })?;
+
+        let base64_data = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+
+        rendered.push(RenderedPage {
+            page: page_num,
+            width: img_width,
+            height: img_height,
+            data_base64: base64_data,
+            mime_type: "image/png".to_string(),
+        });
+    }
+
+    Ok(rendered)
+}
+
+/// Extract form fields from PDF bytes
+pub fn extract_form_fields(
+    data: &[u8],
+    password: Option<&str>,
+    page_numbers: Option<&[u32]>,
+) -> Result<Vec<FormFieldInfo>> {
+    if data.len() < 4 || &data[0..4] != b"%PDF" {
+        return Err(Error::InvalidPdf {
+            reason: "Not a valid PDF file".to_string(),
+        });
+    }
+
+    let pdfium = create_pdfium()?;
+
+    let document = match password {
+        Some(pwd) => pdfium.load_pdf_from_byte_slice(data, Some(pwd)),
+        None => pdfium.load_pdf_from_byte_slice(data, None),
+    }
+    .map_err(|e| match e {
+        PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::PasswordError) => {
+            Error::PasswordRequired
+        }
+        _ => Error::Pdfium {
+            reason: format!("{}", e),
+        },
+    })?;
+
+    let mut fields = Vec::new();
+    let pages = document.pages();
+    let page_count = pages.len() as u32;
+
+    let pages_to_process: Vec<u32> = match page_numbers {
+        Some(nums) => nums
+            .iter()
+            .filter(|&&n| n >= 1 && n <= page_count)
+            .copied()
+            .collect(),
+        None => (1..=page_count).collect(),
+    };
+
+    for page_num in pages_to_process {
+        let page_index = page_num - 1;
+        let page = pages.get(page_index as u16).map_err(|e| Error::Pdfium {
+            reason: format!("Failed to get page {}: {}", page_num, e),
+        })?;
+
+        for annotation in page.annotations().iter() {
+            if let Some(field) = annotation.as_form_field() {
+                let mut info = FormFieldInfo {
+                    page: page_num,
+                    name: field.name(),
+                    field_type: String::new(),
+                    value: None,
+                    is_checked: None,
+                    is_read_only: false,
+                    is_required: false,
+                    options: None,
+                    properties: FormFieldProperties::default(),
+                };
+
+                if let Some(text_field) = field.as_text_field() {
+                    info.field_type = "text".to_string();
+                    info.value = text_field.value();
+                } else if let Some(checkbox) = field.as_checkbox_field() {
+                    info.field_type = "checkbox".to_string();
+                    info.is_checked = checkbox.is_checked().ok();
+                } else if let Some(radio) = field.as_radio_button_field() {
+                    info.field_type = "radio_button".to_string();
+                    info.is_checked = radio.is_checked().ok();
+                } else if let Some(combo) = field.as_combo_box_field() {
+                    info.field_type = "combo_box".to_string();
+                    let mut opts = Vec::new();
+                    for i in 0..combo.options().len() {
+                        if let Ok(opt) = combo.options().get(i) {
+                            opts.push(FormFieldOptionInfo {
+                                label: opt.label().cloned(),
+                                is_selected: opt.is_set(),
+                            });
+                        }
+                    }
+                    if !opts.is_empty() {
+                        info.options = Some(opts);
+                    }
+                } else if let Some(list) = field.as_list_box_field() {
+                    info.field_type = "list_box".to_string();
+                    let mut opts = Vec::new();
+                    for i in 0..list.options().len() {
+                        if let Ok(opt) = list.options().get(i) {
+                            opts.push(FormFieldOptionInfo {
+                                label: opt.label().cloned(),
+                                is_selected: opt.is_set(),
+                            });
+                        }
+                    }
+                    if !opts.is_empty() {
+                        info.options = Some(opts);
+                    }
+                } else if field.as_push_button_field().is_some() {
+                    info.field_type = "push_button".to_string();
+                } else if field.as_signature_field().is_some() {
+                    info.field_type = "signature".to_string();
+                } else {
+                    info.field_type = "unknown".to_string();
+                }
+
+                fields.push(info);
+            }
+        }
+    }
+
+    Ok(fields)
+}
+
+/// Fill form fields in a PDF and return the modified PDF bytes
+pub fn fill_form_fields(
+    data: &[u8],
+    password: Option<&str>,
+    field_values: &[FormFieldValue],
+) -> Result<(Vec<u8>, FillFormResultInfo)> {
+    if data.len() < 4 || &data[0..4] != b"%PDF" {
+        return Err(Error::InvalidPdf {
+            reason: "Not a valid PDF file".to_string(),
+        });
+    }
+
+    let pdfium = create_pdfium()?;
+
+    let document = match password {
+        Some(pwd) => pdfium.load_pdf_from_byte_slice(data, Some(pwd)),
+        None => pdfium.load_pdf_from_byte_slice(data, None),
+    }
+    .map_err(|e| match e {
+        PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::PasswordError) => {
+            Error::PasswordRequired
+        }
+        _ => Error::Pdfium {
+            reason: format!("{}", e),
+        },
+    })?;
+
+    let mut fields_filled = 0u32;
+    let mut fields_skipped = Vec::new();
+    let mut remaining: Vec<&FormFieldValue> = field_values.iter().collect();
+
+    let pages = document.pages();
+
+    for page_index in 0..pages.len() {
+        if remaining.is_empty() {
+            break;
+        }
+
+        let page = pages.get(page_index).map_err(|e| Error::Pdfium {
+            reason: format!("Failed to get page {}: {}", page_index + 1, e),
+        })?;
+
+        for mut annotation in page.annotations().iter() {
+            if remaining.is_empty() {
+                break;
+            }
+
+            if let Some(field) = annotation.as_form_field_mut() {
+                let field_name = field.name();
+
+                // Find matching field value
+                let matching_idx = remaining
+                    .iter()
+                    .position(|fv| field_name.as_ref().map(|n| n == &fv.name).unwrap_or(false));
+
+                if let Some(idx) = matching_idx {
+                    let fv = remaining.remove(idx);
+
+                    if let Some(text_field) = field.as_text_field_mut() {
+                        if let Some(ref val) = fv.value {
+                            match text_field.set_value(val) {
+                                Ok(_) => {
+                                    fields_filled += 1;
+                                }
+                                Err(e) => {
+                                    fields_skipped.push(SkippedField {
+                                        name: fv.name.clone(),
+                                        reason: format!("Failed to set value: {}", e),
+                                    });
+                                }
+                            }
+                        } else {
+                            fields_skipped.push(SkippedField {
+                                name: fv.name.clone(),
+                                reason: "Text field requires 'value' parameter".to_string(),
+                            });
+                        }
+                    } else if let Some(checkbox) = field.as_checkbox_field_mut() {
+                        if let Some(checked) = fv.checked {
+                            match checkbox.set_checked(checked) {
+                                Ok(_) => {
+                                    fields_filled += 1;
+                                }
+                                Err(e) => {
+                                    fields_skipped.push(SkippedField {
+                                        name: fv.name.clone(),
+                                        reason: format!("Failed to set checked: {}", e),
+                                    });
+                                }
+                            }
+                        } else {
+                            fields_skipped.push(SkippedField {
+                                name: fv.name.clone(),
+                                reason: "Checkbox field requires 'checked' parameter".to_string(),
+                            });
+                        }
+                    } else if let Some(radio) = field.as_radio_button_field_mut() {
+                        if let Some(true) = fv.checked {
+                            match radio.set_checked() {
+                                Ok(_) => {
+                                    fields_filled += 1;
+                                }
+                                Err(e) => {
+                                    fields_skipped.push(SkippedField {
+                                        name: fv.name.clone(),
+                                        reason: format!("Failed to select radio: {}", e),
+                                    });
+                                }
+                            }
+                        } else {
+                            fields_skipped.push(SkippedField {
+                                name: fv.name.clone(),
+                                reason: "Radio button requires 'checked: true' to select"
+                                    .to_string(),
+                            });
+                        }
+                    } else {
+                        fields_skipped.push(SkippedField {
+                            name: fv.name.clone(),
+                            reason: "Unsupported field type for writing".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Report any remaining unmatched field names
+    for fv in remaining {
+        fields_skipped.push(SkippedField {
+            name: fv.name.clone(),
+            reason: "Field not found in PDF".to_string(),
+        });
+    }
+
+    // Save the modified PDF to bytes
+    let output_bytes = document.save_to_bytes().map_err(|e| Error::Pdfium {
+        reason: format!("Failed to save modified PDF: {}", e),
+    })?;
+
+    Ok((
+        output_bytes,
+        FillFormResultInfo {
+            fields_filled,
+            fields_skipped,
+        },
+    ))
 }
 
 /// Parse page range string (e.g., "1-5,10,15-20")

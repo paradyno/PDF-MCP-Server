@@ -49,6 +49,12 @@ services:
     profiles: ["dev"]
     command: cargo clippy --all-targets --all-features -- -D warnings
 
+  # Performance benchmarks
+  bench:
+    <<: *dev-common
+    profiles: ["dev"]
+    command: cargo bench
+
   # Production runtime
   production:
     profiles: ["prod"]

@@ -6,7 +6,7 @@
 
 ## Project Overview
 
-This is a Model Context Protocol (MCP) server for PDF operations, implemented in Rust. It provides tools for extracting text, metadata, annotations, images, and links from PDFs, as well as manipulation operations like splitting, merging, compression, and password protection.
+This is a Model Context Protocol (MCP) server for PDF operations, implemented in Rust. It provides tools for extracting text, metadata, annotations, images, links, and form fields from PDFs, as well as manipulation operations like splitting, merging, compression, password protection, form filling, page rendering, and structure summarization.
 
 ## Architecture
 
@@ -85,6 +85,9 @@ docker compose --profile dev run --rm test
 
 # Run specific test
 docker compose --profile dev run --rm dev cargo test --test integration_test test_name -- --nocapture
+
+# Run performance benchmarks
+docker compose --profile dev run --rm bench
 
 # Build production image (minimal runtime, ~120MB)
 docker compose --profile prod build production
@@ -255,6 +258,7 @@ fn fixture_path(name: &str) -> PathBuf {
 - `basicapi.pdf` - Another test document
 - `test-with-outline-and-images.pdf` - PDF with bookmarks and images
 - `password-protected.pdf` - Encrypted PDF (password: `testpass`)
+- `form-test.pdf` - PDF with form fields (text, checkbox, choice)
 
 ## Common Patterns
 
@@ -303,6 +307,8 @@ struct Params {
 4. **Page counts**: Use `QpdfWrapper::get_page_count()` for encrypted PDFs after operations.
 5. **Clippy**: Run before committing - the project uses strict linting.
 6. **Format**: Always run `cargo fmt` before committing.
+7. **PDFium multiple loads**: Calling `create_pdfium()` many times in sequence (3+) on the same PDF can cause SIGSEGV. The `summarize_structure` tool avoids this by gathering all per-page data (images, annotations, links, form fields) in a single `get_page_info()` call rather than calling separate extraction functions. When adding new aggregation tools, prefer using `PdfPageInfo` fields over separate PDFium loads.
+8. **pdfium-render form field API**: `field_type()` returns `PdfFormFieldType` (not `Option`). `is_checked()` returns `Result<bool>`. `options().get(i)` returns `Result`. `opt.label()` returns `Option<&String>` (needs `.cloned()`).
 
 ## Test Coverage Improvements Needed
 
@@ -343,7 +349,7 @@ open coverage/html/index.html
 Potential features to add:
 
 - `rotate_pages` - Rotate specific pages
-- `add_overlay` - Add watermarks/stamps
-- `optimize_pdf` - Reduce file size
+- `extract_tables` - Structured table extraction
+- `add_watermark` - Text/image watermarks
 - `linearize_pdf` - Web optimization
 - `flatten_annotations` - Make annotations permanent

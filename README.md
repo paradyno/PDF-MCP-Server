@@ -12,10 +12,10 @@ Give your AI agents powerful PDF capabilities — extract text, search, split, m
 
 | Category | Tools |
 |----------|-------|
-| 📖 **Reading** | `extract_text` · `extract_metadata` · `extract_outline` · `extract_annotations` · `extract_links` |
-| 🔍 **Search & Discovery** | `search` · `list_pdfs` · `get_page_info` |
-| 🖼️ **Media** | Image extraction (via `extract_text`) |
-| ✂️ **Manipulation** | `split_pdf` · `merge_pdfs` · `compress_pdf` |
+| 📖 **Reading** | `extract_text` · `extract_metadata` · `extract_outline` · `extract_annotations` · `extract_links` · `extract_form_fields` |
+| 🔍 **Search & Discovery** | `search` · `list_pdfs` · `get_page_info` · `summarize_structure` |
+| 🖼️ **Media** | Image extraction (via `extract_text`) · `convert_page_to_image` |
+| ✂️ **Manipulation** | `split_pdf` · `merge_pdfs` · `compress_pdf` · `fill_form` |
 | 🔒 **Security** | `protect_pdf` · `unprotect_pdf` · Password-protected PDF support |
 | 📦 **Resources** | Expose PDFs as MCP Resources for direct client access |
 | ⚡ **Performance** | Batch processing · LRU caching · Operation chaining via cache keys |
@@ -247,6 +247,106 @@ Extract hyperlinks and internal page navigation links.
 
 </details>
 
+### 📖 `extract_form_fields`
+
+Read form field names, types, current values, and properties from PDF forms.
+
+<details>
+<summary>Example, Parameters & Response</summary>
+
+```json
+{
+  "sources": [{ "path": "/documents/form.pdf" }],
+  "pages": "1"
+}
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sources` | array | Yes | — | PDF sources |
+| `pages` | string | No | all | Page selection |
+| `password` | string | No | — | PDF password if encrypted |
+| `cache` | boolean | No | false | Enable caching |
+
+**Response:**
+
+```json
+{
+  "results": [{
+    "source": "/documents/form.pdf",
+    "fields": [
+      {
+        "page": 1,
+        "name": "full_name",
+        "field_type": "text",
+        "value": "John Doe",
+        "is_read_only": false,
+        "is_required": true,
+        "properties": { "is_multiline": false, "is_password": false }
+      },
+      {
+        "page": 1,
+        "name": "agree_terms",
+        "field_type": "checkbox",
+        "is_checked": true,
+        "is_read_only": false,
+        "is_required": false,
+        "properties": {}
+      }
+    ],
+    "total_fields": 2
+  }]
+}
+```
+
+</details>
+
+### 🖼️ `convert_page_to_image`
+
+Render PDF pages as PNG images (base64). Enables Vision LLMs to understand visual layouts, charts, and diagrams.
+
+<details>
+<summary>Example, Parameters & Response</summary>
+
+```json
+{
+  "sources": [{ "path": "/documents/chart.pdf" }],
+  "pages": "1-3",
+  "width": 1200
+}
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sources` | array | Yes | — | PDF sources |
+| `pages` | string | No | all | Page selection |
+| `width` | integer | No | 1200 | Target width in pixels |
+| `height` | integer | No | — | Target height in pixels |
+| `scale` | float | No | — | Scale factor (overrides width/height) |
+| `password` | string | No | — | PDF password if encrypted |
+| `cache` | boolean | No | false | Enable caching |
+
+**Response:**
+
+```json
+{
+  "results": [{
+    "source": "/documents/chart.pdf",
+    "pages": [
+      {
+        "page": 1,
+        "width": 1200,
+        "height": 1553,
+        "data_base64": "iVBORw0KGgo...",
+        "mime_type": "image/png"
+      }
+    ]
+  }]
+}
+```
+
+</details>
+
 ### 🔍 `search`
 
 Full-text search within PDFs with surrounding context.
@@ -317,6 +417,55 @@ Get page dimensions, word/char counts, token estimates, and file sizes. Useful f
 ```
 
 > **Note:** Token counts are model-dependent approximations (~4 chars/token for Latin, ~2 tokens/char for CJK). Use as rough guidance only.
+
+</details>
+
+### 🔍 `summarize_structure`
+
+One-call comprehensive overview of a PDF's structure. Helps LLMs decide how to process a document.
+
+<details>
+<summary>Example, Parameters & Response</summary>
+
+```json
+{
+  "sources": [{ "path": "/documents/report.pdf" }]
+}
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sources` | array | Yes | — | PDF sources |
+| `password` | string | No | — | PDF password if encrypted |
+| `cache` | boolean | No | false | Enable caching |
+
+**Response:**
+
+```json
+{
+  "results": [{
+    "source": "/documents/report.pdf",
+    "page_count": 25,
+    "file_size": 1048576,
+    "metadata": { "title": "Annual Report", "author": "Acme Corp" },
+    "has_outline": true,
+    "outline_items": 12,
+    "total_chars": 50000,
+    "total_words": 9000,
+    "total_estimated_tokens": 12500,
+    "pages": [
+      { "page": 1, "width": 612.0, "height": 792.0, "char_count": 2000, "word_count": 360, "has_images": true, "has_links": false, "has_annotations": false }
+    ],
+    "total_images": 5,
+    "total_links": 3,
+    "total_annotations": 2,
+    "has_form": false,
+    "form_field_count": 0,
+    "form_field_types": {},
+    "is_encrypted": false
+  }]
+}
+```
 
 </details>
 
@@ -441,6 +590,43 @@ Reduce PDF file size using stream optimization, object deduplication, and compre
   }]
 }
 ```
+
+</details>
+
+### ✂️ `fill_form`
+
+Write values into existing PDF form fields and produce a new PDF.
+
+<details>
+<summary>Example, Parameters & Limitations</summary>
+
+```json
+{
+  "source": { "path": "/documents/form.pdf" },
+  "field_values": [
+    { "name": "full_name", "value": "Jane Smith" },
+    { "name": "agree_terms", "checked": true }
+  ],
+  "output_path": "/output/filled-form.pdf"
+}
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `source` | object | Yes | — | PDF source |
+| `field_values` | array | Yes | — | Fields to fill (see below) |
+| `output_path` | string | No | — | Save output to file |
+| `password` | string | No | — | PDF password if encrypted |
+
+**Field value format:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Field name (use `extract_form_fields` to discover names) |
+| `value` | string | Text value (for text fields) |
+| `checked` | boolean | Checked state (for checkbox/radio fields) |
+
+**Supported field types:** Text fields, checkboxes, radio buttons. ComboBox/ListBox selection is read-only.
 
 </details>
 
@@ -612,6 +798,9 @@ docker compose --profile dev run --rm dev cargo fmt --all
 # Lint
 docker compose --profile dev run --rm clippy
 
+# Performance benchmarks
+docker compose --profile dev run --rm bench
+
 # Build production image (~120MB)
 docker compose --profile prod build production
 
@@ -629,6 +818,7 @@ Requires PDFium installed locally. Download from [pdfium-binaries](https://githu
 ```bash
 cargo build --release
 cargo test
+cargo bench
 cargo llvm-cov --html
 ```
 
@@ -672,12 +862,14 @@ Dynamic thresholds · Paragraph detection · Multi-column layout · Watermark re
 ### Phase 2.6: Discovery & Resources ✅
 list_pdfs · MCP Resources · Resource directory configuration
 
+### Phase 2.7: Vision & Forms ✅
+convert_page_to_image · extract_form_fields · fill_form · summarize_structure
+
 </details>
 
 ### Phase 3: Advanced Features (Planned)
 
 - `rotate_pages` — Rotate specific pages
-- `convert_to_images` — Render pages as PNG/JPEG
 - `extract_tables` — Structured table extraction
 - `add_watermark` — Text/image watermarks
 - `linearize_pdf` — Web optimization

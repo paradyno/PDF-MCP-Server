@@ -50,6 +50,11 @@ tokio-test = "0.4"
 pretty_assertions = "1"
 rstest = "0.24"
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "pdf_benchmark"
+harness = false
 
 [profile.release]
 lto = true

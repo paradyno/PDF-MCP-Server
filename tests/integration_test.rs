@@ -2,8 +2,9 @@
 
 use base64::Engine;
 use pdf_mcp_server::pdf::{
-    extract_annotations, extract_images, extract_images_from_pages, extract_links, get_page_info,
-    parse_page_range, PdfReader,
+    extract_annotations, extract_form_fields, extract_images, extract_images_from_pages,
+    extract_links, fill_form_fields, get_page_info, parse_page_range, render_pages_to_images,
+    FormFieldValue, PdfReader,
 };
 use std::path::PathBuf;
 
@@ -1659,4 +1660,481 @@ fn test_pdf_server_without_resource_dirs() {
 
     // Server should be created successfully without resource dirs
     drop(server);
+}
+
+// ============================================================================
+// convert_page_to_image / render_pages_to_images tests
+// ============================================================================
+
+/// Test rendering a single page to image
+#[test]
+fn test_render_page_to_image_single() {
+    let path = fixture_path("dummy.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = render_pages_to_images(&data, None, &[1], None, None, None);
+    assert!(result.is_ok(), "render_pages_to_images should succeed");
+
+    let rendered = result.unwrap();
+    assert_eq!(rendered.len(), 1, "Should render exactly 1 page");
+
+    let page = &rendered[0];
+    assert_eq!(page.page, 1);
+    assert!(page.width > 0);
+    assert!(page.height > 0);
+    assert!(!page.data_base64.is_empty());
+    assert_eq!(page.mime_type, "image/png");
+
+    // Verify PNG header in base64-decoded data
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&page.data_base64)
+        .expect("Should be valid base64");
+    assert!(decoded.len() >= 8);
+    assert_eq!(
+        &decoded[0..8],
+        &[137, 80, 78, 71, 13, 10, 26, 10],
+        "Should have PNG header"
+    );
+}
+
+/// Test rendering multiple pages
+#[test]
+fn test_render_pages_to_images_multiple() {
+    let path = fixture_path("tracemonkey.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = render_pages_to_images(&data, None, &[1, 2, 3], None, None, None);
+    assert!(result.is_ok(), "render_pages_to_images should succeed");
+
+    let rendered = result.unwrap();
+    assert_eq!(rendered.len(), 3, "Should render 3 pages");
+    assert_eq!(rendered[0].page, 1);
+    assert_eq!(rendered[1].page, 2);
+    assert_eq!(rendered[2].page, 3);
+}
+
+/// Test rendering with custom width
+#[test]
+fn test_render_page_with_custom_width() {
+    let path = fixture_path("dummy.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = render_pages_to_images(&data, None, &[1], Some(800), None, None);
+    assert!(result.is_ok(), "render with custom width should succeed");
+
+    let rendered = result.unwrap();
+    assert_eq!(rendered.len(), 1);
+    // Width should be approximately 800 (may not be exact due to aspect ratio)
+    assert!(rendered[0].width > 0);
+}
+
+/// Test rendering with scale factor
+#[test]
+fn test_render_page_with_scale() {
+    let path = fixture_path("dummy.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = render_pages_to_images(&data, None, &[1], None, None, Some(2.0));
+    assert!(result.is_ok(), "render with scale should succeed");
+
+    let rendered = result.unwrap();
+    assert_eq!(rendered.len(), 1);
+    assert!(rendered[0].width > 0);
+}
+
+/// Test rendering password-protected PDF
+#[test]
+fn test_render_page_password_protected() {
+    let path = fixture_path("password-protected.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = render_pages_to_images(&data, Some("testpass"), &[1], None, None, None);
+    assert!(
+        result.is_ok(),
+        "render password-protected PDF should succeed"
+    );
+
+    let rendered = result.unwrap();
+    assert_eq!(rendered.len(), 1);
+}
+
+/// Test rendering without password fails
+#[test]
+fn test_render_page_password_required() {
+    let path = fixture_path("password-protected.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = render_pages_to_images(&data, None, &[1], None, None, None);
+    assert!(result.is_err(), "Should fail without password");
+}
+
+/// Test rendering with invalid page numbers (should skip)
+#[test]
+fn test_render_page_invalid_page() {
+    let path = fixture_path("dummy.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = render_pages_to_images(&data, None, &[9999], None, None, None);
+    assert!(result.is_ok(), "Should succeed but return empty");
+
+    let rendered = result.unwrap();
+    assert!(rendered.is_empty(), "Invalid page should be skipped");
+}
+
+/// Test rendering invalid PDF fails
+#[test]
+fn test_render_page_invalid_pdf() {
+    let result = render_pages_to_images(b"not a valid PDF", None, &[1], None, None, None);
+    assert!(result.is_err(), "Should fail for invalid PDF");
+}
+
+// ============================================================================
+// extract_form_fields tests
+// ============================================================================
+
+/// Test extracting form fields from a form PDF
+#[test]
+fn test_extract_form_fields_basic() {
+    let path = fixture_path("form-test.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = extract_form_fields(&data, None, None);
+    assert!(result.is_ok(), "extract_form_fields should succeed");
+
+    let fields = result.unwrap();
+    assert!(!fields.is_empty(), "Form PDF should have fields");
+
+    // Check that we found expected field types
+    let field_types: Vec<&str> = fields.iter().map(|f| f.field_type.as_str()).collect();
+    assert!(
+        field_types.contains(&"text") || field_types.contains(&"checkbox"),
+        "Should find text or checkbox fields"
+    );
+}
+
+/// Test extracting form fields from non-form PDF
+#[test]
+fn test_extract_form_fields_no_form() {
+    let path = fixture_path("tracemonkey.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = extract_form_fields(&data, None, None);
+    assert!(result.is_ok(), "Should succeed for non-form PDF");
+
+    let fields = result.unwrap();
+    // tracemonkey.pdf has no form fields, but may have widget annotations
+    let _ = fields;
+}
+
+/// Test extracting form fields with page filter
+#[test]
+fn test_extract_form_fields_page_filter() {
+    let path = fixture_path("form-test.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let result = extract_form_fields(&data, None, Some(&[1]));
+    assert!(result.is_ok(), "Should succeed with page filter");
+
+    let fields = result.unwrap();
+    for field in &fields {
+        assert_eq!(field.page, 1, "All fields should be from page 1");
+    }
+}
+
+/// Test form field names are populated
+#[test]
+fn test_extract_form_fields_names() {
+    let path = fixture_path("form-test.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let fields = extract_form_fields(&data, None, None).expect("Should succeed");
+
+    // At least some fields should have names
+    let named_fields: Vec<_> = fields.iter().filter(|f| f.name.is_some()).collect();
+    assert!(!named_fields.is_empty(), "Should have fields with names");
+}
+
+/// Test extracting form fields from invalid PDF
+#[test]
+fn test_extract_form_fields_invalid_pdf() {
+    let result = extract_form_fields(b"not a valid PDF", None, None);
+    assert!(result.is_err(), "Should fail for invalid PDF");
+}
+
+// ============================================================================
+// fill_form tests
+// ============================================================================
+
+/// Test filling a text field
+#[test]
+fn test_fill_form_text_field() {
+    let path = fixture_path("form-test.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let values = vec![FormFieldValue {
+        name: "full_name".to_string(),
+        value: Some("Jane Smith".to_string()),
+        checked: None,
+    }];
+
+    let result = fill_form_fields(&data, None, &values);
+    assert!(result.is_ok(), "fill_form_fields should succeed");
+
+    let (output_data, fill_result) = result.unwrap();
+    assert!(!output_data.is_empty(), "Output PDF should not be empty");
+    assert!(
+        fill_result.fields_filled > 0 || !fill_result.fields_skipped.is_empty(),
+        "Should have processed at least one field"
+    );
+}
+
+/// Test filling nonexistent field (should be skipped)
+#[test]
+fn test_fill_form_nonexistent_field() {
+    let path = fixture_path("form-test.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let values = vec![FormFieldValue {
+        name: "nonexistent_field".to_string(),
+        value: Some("test".to_string()),
+        checked: None,
+    }];
+
+    let result = fill_form_fields(&data, None, &values);
+    assert!(result.is_ok(), "Should succeed even with nonexistent field");
+
+    let (_, fill_result) = result.unwrap();
+    assert_eq!(fill_result.fields_filled, 0, "No fields should be filled");
+    assert_eq!(
+        fill_result.fields_skipped.len(),
+        1,
+        "Nonexistent field should be reported as skipped"
+    );
+    assert_eq!(fill_result.fields_skipped[0].name, "nonexistent_field");
+}
+
+/// Test fill_form produces valid PDF output
+#[test]
+fn test_fill_form_valid_output() {
+    let path = fixture_path("form-test.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let values = vec![FormFieldValue {
+        name: "email".to_string(),
+        value: Some("test@example.com".to_string()),
+        checked: None,
+    }];
+
+    let result = fill_form_fields(&data, None, &values);
+    assert!(result.is_ok(), "fill_form_fields should succeed");
+
+    let (output_data, _) = result.unwrap();
+
+    // Verify output is valid PDF (has PDF header)
+    assert!(output_data.len() >= 4);
+    assert_eq!(&output_data[0..4], b"%PDF", "Output should be a valid PDF");
+
+    // Verify output can be opened
+    let reader = PdfReader::open_bytes(&output_data, None);
+    assert!(reader.is_ok(), "Output PDF should be readable");
+}
+
+/// Test fill_form with invalid PDF
+#[test]
+fn test_fill_form_invalid_pdf() {
+    let values = vec![FormFieldValue {
+        name: "test".to_string(),
+        value: Some("value".to_string()),
+        checked: None,
+    }];
+
+    let result = fill_form_fields(b"not a valid PDF", None, &values);
+    assert!(result.is_err(), "Should fail for invalid PDF");
+}
+
+// ============================================================================
+// summarize_structure tests (via server)
+// ============================================================================
+
+/// Test summarize_structure with multi-page PDF
+#[tokio::test]
+async fn test_summarize_structure_multi_page() {
+    let server = PdfServer::new();
+    let source = pdf_mcp_server::server::PdfSource::Path {
+        path: fixture_path("tracemonkey.pdf")
+            .to_string_lossy()
+            .to_string(),
+    };
+    let params = pdf_mcp_server::server::SummarizeStructureParams {
+        sources: vec![source.clone()],
+        password: None,
+        cache: false,
+    };
+
+    let result = server
+        .process_summarize_structure(&source, &params)
+        .await
+        .unwrap();
+    assert!(result.error.is_none());
+    assert!(result.page_count > 0);
+    assert!(result.file_size > 0);
+    assert!(result.total_chars > 0);
+    assert!(result.total_words > 0);
+    assert!(result.total_estimated_tokens > 0);
+    assert_eq!(result.pages.len(), result.page_count as usize);
+    assert!(result.metadata.is_some());
+}
+
+/// Test summarize_structure with outline PDF
+#[tokio::test]
+async fn test_summarize_structure_with_outline() {
+    let server = PdfServer::new();
+    let source = pdf_mcp_server::server::PdfSource::Path {
+        path: fixture_path("test-with-outline-and-images.pdf")
+            .to_string_lossy()
+            .to_string(),
+    };
+    let params = pdf_mcp_server::server::SummarizeStructureParams {
+        sources: vec![source.clone()],
+        password: None,
+        cache: false,
+    };
+
+    let result = server
+        .process_summarize_structure(&source, &params)
+        .await
+        .unwrap();
+    assert!(result.error.is_none());
+    assert!(result.page_count > 0);
+}
+
+/// Test summarize_structure with form PDF
+#[tokio::test]
+async fn test_summarize_structure_with_form() {
+    let server = PdfServer::new();
+    let source = pdf_mcp_server::server::PdfSource::Path {
+        path: fixture_path("form-test.pdf").to_string_lossy().to_string(),
+    };
+    let params = pdf_mcp_server::server::SummarizeStructureParams {
+        sources: vec![source.clone()],
+        password: None,
+        cache: false,
+    };
+
+    let result = server
+        .process_summarize_structure(&source, &params)
+        .await
+        .unwrap();
+    assert!(result.error.is_none());
+    assert!(result.page_count > 0);
+    assert!(result.has_form, "Form PDF should report has_form=true");
+    assert!(result.form_field_count > 0, "Should have form fields");
+    assert!(
+        !result.form_field_types.is_empty(),
+        "Should report form field types"
+    );
+}
+
+/// Test summarize_structure with simple PDF
+#[tokio::test]
+async fn test_summarize_structure_simple() {
+    let server = PdfServer::new();
+    let source = pdf_mcp_server::server::PdfSource::Path {
+        path: fixture_path("dummy.pdf").to_string_lossy().to_string(),
+    };
+    let params = pdf_mcp_server::server::SummarizeStructureParams {
+        sources: vec![source.clone()],
+        password: None,
+        cache: false,
+    };
+
+    let result = server
+        .process_summarize_structure(&source, &params)
+        .await
+        .unwrap();
+    assert!(result.error.is_none());
+    assert!(result.page_count > 0);
+    assert!(!result.is_encrypted);
+}
+
+// ============================================================================
+// Server-level convert_page_to_image tests
+// ============================================================================
+
+/// Test server-level convert_page_to_image
+#[tokio::test]
+async fn test_server_convert_page_to_image() {
+    let server = PdfServer::new();
+    let source = pdf_mcp_server::server::PdfSource::Path {
+        path: fixture_path("dummy.pdf").to_string_lossy().to_string(),
+    };
+    let params = pdf_mcp_server::server::ConvertPageToImageParams {
+        sources: vec![source.clone()],
+        pages: Some("1".to_string()),
+        width: None,
+        height: None,
+        scale: None,
+        password: None,
+        cache: false,
+    };
+
+    let result = server
+        .process_convert_page_to_image(&source, &params)
+        .await
+        .unwrap();
+    assert!(result.error.is_none());
+    assert_eq!(result.pages.len(), 1);
+    assert!(!result.pages[0].data_base64.is_empty());
+}
+
+// ============================================================================
+// Server-level extract_form_fields tests
+// ============================================================================
+
+/// Test server-level extract_form_fields
+#[tokio::test]
+async fn test_server_extract_form_fields() {
+    let server = PdfServer::new();
+    let source = pdf_mcp_server::server::PdfSource::Path {
+        path: fixture_path("form-test.pdf").to_string_lossy().to_string(),
+    };
+    let params = pdf_mcp_server::server::ExtractFormFieldsParams {
+        sources: vec![source.clone()],
+        pages: None,
+        password: None,
+        cache: false,
+    };
+
+    let result = server
+        .process_extract_form_fields(&source, &params)
+        .await
+        .unwrap();
+    assert!(result.error.is_none());
+    assert!(result.total_fields > 0);
+}
+
+// ============================================================================
+// Server-level fill_form tests
+// ============================================================================
+
+/// Test server-level fill_form
+#[tokio::test]
+async fn test_server_fill_form() {
+    let server = PdfServer::new();
+    let params = pdf_mcp_server::server::FillFormParams {
+        source: pdf_mcp_server::server::PdfSource::Path {
+            path: fixture_path("form-test.pdf").to_string_lossy().to_string(),
+        },
+        field_values: vec![pdf_mcp_server::server::FormFieldValueParam {
+            name: "full_name".to_string(),
+            value: Some("Test User".to_string()),
+            checked: None,
+        }],
+        output_path: None,
+        password: None,
+    };
+
+    let result = server.process_fill_form(&params).await.unwrap();
+    assert!(result.error.is_none());
+    assert!(!result.output_cache_key.is_empty());
 }

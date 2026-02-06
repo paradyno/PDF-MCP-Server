@@ -1,8 +1,9 @@
 //! MCP Server implementation using rmcp
 
 use crate::pdf::{
-    extract_annotations, extract_images_from_pages, extract_links, extract_text_with_options,
-    get_page_info, parse_page_range, PdfReader, QpdfWrapper, TextExtractionConfig,
+    extract_annotations, extract_form_fields, extract_images_from_pages, extract_links,
+    extract_text_with_options, fill_form_fields, get_page_info, parse_page_range,
+    render_pages_to_images, PdfReader, QpdfWrapper, TextExtractionConfig,
 };
 use crate::source::{
     resolve_base64, resolve_cache, resolve_path, resolve_url, CacheManager, ResolvedPdf,
@@ -14,6 +15,7 @@ use rmcp::{
     ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -709,6 +711,274 @@ pub struct CompressPdfResult {
 }
 
 // ============================================================================
+// Request/Response types for convert_page_to_image
+// ============================================================================
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConvertPageToImageParams {
+    /// PDF sources to process
+    pub sources: Vec<PdfSource>,
+    /// Page selection (e.g., "1-3,5"). Defaults to all pages.
+    #[serde(default)]
+    pub pages: Option<String>,
+    /// Target image width in pixels (default: 1200). Ignored if scale is set.
+    #[serde(default)]
+    pub width: Option<u16>,
+    /// Target image height in pixels. Ignored if scale is set.
+    #[serde(default)]
+    pub height: Option<u16>,
+    /// Scale factor relative to PDF page size (e.g., 2.0 for double size). Overrides width/height.
+    #[serde(default)]
+    pub scale: Option<f32>,
+    /// Password for encrypted PDFs
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Enable caching
+    #[serde(default)]
+    pub cache: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RenderedPageInfo {
+    /// Page number (1-indexed)
+    pub page: u32,
+    /// Image width in pixels
+    pub width: u32,
+    /// Image height in pixels
+    pub height: u32,
+    /// Base64-encoded PNG image data
+    pub data_base64: String,
+    /// MIME type (always "image/png")
+    pub mime_type: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ConvertPageToImageResult {
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
+    pub pages: Vec<RenderedPageInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ============================================================================
+// Request/Response types for extract_form_fields
+// ============================================================================
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExtractFormFieldsParams {
+    /// PDF sources to process
+    pub sources: Vec<PdfSource>,
+    /// Page selection (e.g., "1-3,5"). Defaults to all pages.
+    #[serde(default)]
+    pub pages: Option<String>,
+    /// Password for encrypted PDFs
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Enable caching
+    #[serde(default)]
+    pub cache: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FormFieldOptionInfoResponse {
+    /// Display label
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Whether this option is currently selected
+    pub is_selected: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FormFieldPropertiesResponse {
+    /// Whether text field is multiline
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_multiline: Option<bool>,
+    /// Whether text field is a password field
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_password: Option<bool>,
+    /// Whether combo box is editable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_editable: Option<bool>,
+    /// Whether combo/list box allows multiple selections
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_multiselect: Option<bool>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FormFieldInfoResponse {
+    /// Page number (1-indexed)
+    pub page: u32,
+    /// Field name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Field type (text, checkbox, radio_button, combo_box, list_box, push_button, signature, unknown)
+    pub field_type: String,
+    /// Current value (for text fields)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Whether checked (for checkbox/radio)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_checked: Option<bool>,
+    /// Read-only flag
+    pub is_read_only: bool,
+    /// Required flag
+    pub is_required: bool,
+    /// Available options (for combo_box/list_box)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<FormFieldOptionInfoResponse>>,
+    /// Type-specific properties
+    pub properties: FormFieldPropertiesResponse,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ExtractFormFieldsResult {
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
+    pub fields: Vec<FormFieldInfoResponse>,
+    pub total_fields: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ============================================================================
+// Request/Response types for fill_form
+// ============================================================================
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FormFieldValueParam {
+    /// Field name to match
+    pub name: String,
+    /// Text value (for text fields)
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Checked state (for checkbox/radio)
+    #[serde(default)]
+    pub checked: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FillFormParams {
+    /// Source PDF containing form fields
+    pub source: PdfSource,
+    /// Field values to set
+    pub field_values: Vec<FormFieldValueParam>,
+    /// Output file path (optional). If provided, saves the filled PDF to this path.
+    #[serde(default)]
+    pub output_path: Option<String>,
+    /// Password for encrypted PDFs
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SkippedFieldInfo {
+    /// Field name
+    pub name: String,
+    /// Reason the field was skipped
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FillFormResult {
+    /// Source identifier
+    pub source: String,
+    /// Cache key for the output PDF (always provided for chaining operations)
+    pub output_cache_key: String,
+    /// Number of fields successfully filled
+    pub fields_filled: u32,
+    /// Fields that could not be filled
+    pub fields_skipped: Vec<SkippedFieldInfo>,
+    /// Number of pages in output PDF
+    pub output_page_count: u32,
+    /// Path where PDF was saved (if output_path was specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ============================================================================
+// Request/Response types for summarize_structure
+// ============================================================================
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SummarizeStructureParams {
+    /// PDF sources to process
+    pub sources: Vec<PdfSource>,
+    /// Password for encrypted PDFs
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Enable caching
+    #[serde(default)]
+    pub cache: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PageSummary {
+    /// Page number (1-indexed)
+    pub page: u32,
+    /// Page width in points
+    pub width: f32,
+    /// Page height in points
+    pub height: f32,
+    /// Character count
+    pub char_count: usize,
+    /// Word count
+    pub word_count: usize,
+    /// Whether page has images
+    pub has_images: bool,
+    /// Whether page has links
+    pub has_links: bool,
+    /// Whether page has annotations
+    pub has_annotations: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SummarizeStructureResult {
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
+    /// Total page count
+    pub page_count: u32,
+    /// File size in bytes
+    pub file_size: usize,
+    /// PDF metadata
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<PdfMetadata>,
+    /// Whether the PDF has an outline (bookmarks)
+    pub has_outline: bool,
+    /// Number of outline/bookmark entries
+    pub outline_items: u32,
+    /// Total characters across all pages
+    pub total_chars: usize,
+    /// Total words across all pages
+    pub total_words: usize,
+    /// Total estimated tokens for LLMs
+    pub total_estimated_tokens: usize,
+    /// Per-page summary
+    pub pages: Vec<PageSummary>,
+    /// Total images across all pages
+    pub total_images: u32,
+    /// Total links across all pages
+    pub total_links: u32,
+    /// Total annotations across all pages
+    pub total_annotations: u32,
+    /// Whether the PDF has form fields
+    pub has_form: bool,
+    /// Total form field count
+    pub form_field_count: u32,
+    /// Form field types and counts (e.g., {"text": 5, "checkbox": 2})
+    pub form_field_types: HashMap<String, u32>,
+    /// Whether the PDF was encrypted (password was needed)
+    pub is_encrypted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ============================================================================
 // Tool implementations
 // ============================================================================
 
@@ -1072,6 +1342,164 @@ The output is always cached (output_cache_key) for chaining with other tools."
             });
 
         let response = serde_json::json!({ "results": [result] });
+        serde_json::to_string_pretty(&response).unwrap_or_default()
+    }
+
+    /// Convert PDF pages to images
+    #[tool(
+        description = "Render PDF pages as PNG images (base64-encoded). Enables Vision LLMs to understand visual layouts, charts, diagrams, and scanned content.
+
+Options:
+- width: Target width in pixels (default: 1200). Aspect ratio is preserved.
+- height: Target height in pixels.
+- scale: Scale factor relative to PDF page size (e.g., 2.0). Overrides width/height.
+
+Returns base64-encoded PNG data per page, suitable for direct use with Vision models."
+    )]
+    async fn convert_page_to_image(
+        &self,
+        Parameters(params): Parameters<ConvertPageToImageParams>,
+    ) -> String {
+        let mut results = Vec::new();
+
+        for source in &params.sources {
+            let result = self
+                .process_convert_page_to_image(source, &params)
+                .await
+                .unwrap_or_else(|e| ConvertPageToImageResult {
+                    source: Self::source_name(source),
+                    cache_key: None,
+                    pages: vec![],
+                    error: Some(e.to_string()),
+                });
+            results.push(result);
+        }
+
+        let response = serde_json::json!({ "results": results });
+        serde_json::to_string_pretty(&response).unwrap_or_default()
+    }
+
+    /// Extract form fields from PDF files
+    #[tool(
+        description = "Extract form fields from PDF files. Returns field names, types, current values, and properties.
+
+Supported field types:
+- text: Text input fields (returns current value)
+- checkbox: Checkbox fields (returns checked state)
+- radio_button: Radio button fields (returns selected state)
+- combo_box: Dropdown select fields (returns options and selection)
+- list_box: List select fields (returns options and selection)
+- push_button: Button fields
+- signature: Digital signature fields
+
+Useful for understanding PDF forms before filling them with fill_form."
+    )]
+    async fn extract_form_fields(
+        &self,
+        Parameters(params): Parameters<ExtractFormFieldsParams>,
+    ) -> String {
+        let mut results = Vec::new();
+
+        for source in &params.sources {
+            let result = self
+                .process_extract_form_fields(source, &params)
+                .await
+                .unwrap_or_else(|e| ExtractFormFieldsResult {
+                    source: Self::source_name(source),
+                    cache_key: None,
+                    fields: vec![],
+                    total_fields: 0,
+                    error: Some(e.to_string()),
+                });
+            results.push(result);
+        }
+
+        let response = serde_json::json!({ "results": results });
+        serde_json::to_string_pretty(&response).unwrap_or_default()
+    }
+
+    /// Fill form fields in a PDF
+    #[tool(
+        description = "Fill form fields in a PDF and produce a new PDF. Supports text fields, checkboxes, and radio buttons.
+
+Each field_value entry specifies:
+- name: The field name (use extract_form_fields to discover names)
+- value: Text value (for text fields)
+- checked: Boolean (for checkbox/radio fields)
+
+Limitations:
+- ComboBox/ListBox selection is not supported (read-only via extract_form_fields)
+- Fields are matched by name; unmatched fields are reported as skipped
+
+The output is always cached (output_cache_key) for chaining with other tools."
+    )]
+    async fn fill_form(&self, Parameters(params): Parameters<FillFormParams>) -> String {
+        let result = self
+            .process_fill_form(&params)
+            .await
+            .unwrap_or_else(|e| FillFormResult {
+                source: Self::source_name(&params.source),
+                output_cache_key: String::new(),
+                fields_filled: 0,
+                fields_skipped: vec![],
+                output_page_count: 0,
+                output_path: None,
+                error: Some(e.to_string()),
+            });
+
+        let response = serde_json::json!({ "results": [result] });
+        serde_json::to_string_pretty(&response).unwrap_or_default()
+    }
+
+    /// Get comprehensive PDF structure summary
+    #[tool(
+        description = "Get a comprehensive one-call overview of a PDF's structure. Helps decide how to process a document.
+
+Returns:
+- Basic info: page count, file size, metadata
+- Content stats: total chars, words, estimated tokens per page
+- Structure: outline/bookmarks presence and count
+- Per-page details: dimensions, char/word counts, has_images/links/annotations flags
+- Form info: field count and types
+- Security: encryption status
+
+Use this as a first step to understand a PDF before applying other tools."
+    )]
+    async fn summarize_structure(
+        &self,
+        Parameters(params): Parameters<SummarizeStructureParams>,
+    ) -> String {
+        let mut results = Vec::new();
+
+        for source in &params.sources {
+            let result = self
+                .process_summarize_structure(source, &params)
+                .await
+                .unwrap_or_else(|e| SummarizeStructureResult {
+                    source: Self::source_name(source),
+                    cache_key: None,
+                    page_count: 0,
+                    file_size: 0,
+                    metadata: None,
+                    has_outline: false,
+                    outline_items: 0,
+                    total_chars: 0,
+                    total_words: 0,
+                    total_estimated_tokens: 0,
+                    pages: vec![],
+                    total_images: 0,
+                    total_links: 0,
+                    total_annotations: 0,
+                    has_form: false,
+                    form_field_count: 0,
+                    form_field_types: HashMap::new(),
+                    is_encrypted: false,
+                    error: Some(e.to_string()),
+                });
+            results.push(result);
+        }
+
+        let response = serde_json::json!({ "results": results });
         serde_json::to_string_pretty(&response).unwrap_or_default()
     }
 
@@ -1870,6 +2298,331 @@ impl PdfServer {
             output_path,
             error: None,
         })
+    }
+
+    pub async fn process_convert_page_to_image(
+        &self,
+        source: &PdfSource,
+        params: &ConvertPageToImageParams,
+    ) -> crate::error::Result<ConvertPageToImageResult> {
+        let resolved = self.resolve_source(source).await?;
+        let source_name = resolved.source_name.clone();
+
+        // Cache if requested
+        let cache_key = if params.cache {
+            let key = CacheManager::generate_key();
+            self.cache
+                .write()
+                .await
+                .put(key.clone(), resolved.data.clone());
+            Some(key)
+        } else {
+            None
+        };
+
+        // Determine pages to render
+        let reader =
+            PdfReader::open_bytes_metadata_only(&resolved.data, params.password.as_deref())?;
+        let page_count = reader.page_count();
+
+        let page_numbers = if let Some(ref page_range) = params.pages {
+            parse_page_range(page_range, page_count)?
+        } else {
+            (1..=page_count).collect()
+        };
+
+        // Render pages
+        let rendered = render_pages_to_images(
+            &resolved.data,
+            params.password.as_deref(),
+            &page_numbers,
+            params.width,
+            params.height,
+            params.scale,
+        )?;
+
+        let pages = rendered
+            .into_iter()
+            .map(|rp| RenderedPageInfo {
+                page: rp.page,
+                width: rp.width,
+                height: rp.height,
+                data_base64: rp.data_base64,
+                mime_type: rp.mime_type,
+            })
+            .collect();
+
+        Ok(ConvertPageToImageResult {
+            source: source_name,
+            cache_key,
+            pages,
+            error: None,
+        })
+    }
+
+    pub async fn process_extract_form_fields(
+        &self,
+        source: &PdfSource,
+        params: &ExtractFormFieldsParams,
+    ) -> crate::error::Result<ExtractFormFieldsResult> {
+        let resolved = self.resolve_source(source).await?;
+        let source_name = resolved.source_name.clone();
+
+        // Cache if requested
+        let cache_key = if params.cache {
+            let key = CacheManager::generate_key();
+            self.cache
+                .write()
+                .await
+                .put(key.clone(), resolved.data.clone());
+            Some(key)
+        } else {
+            None
+        };
+
+        // Parse page range if specified
+        let page_numbers = if let Some(ref page_range) = params.pages {
+            let reader =
+                PdfReader::open_bytes_metadata_only(&resolved.data, params.password.as_deref())?;
+            let page_count = reader.page_count();
+            Some(parse_page_range(page_range, page_count)?)
+        } else {
+            None
+        };
+
+        // Extract form fields
+        let pdf_fields = extract_form_fields(
+            &resolved.data,
+            params.password.as_deref(),
+            page_numbers.as_deref(),
+        )?;
+
+        let total_fields = pdf_fields.len();
+
+        let fields: Vec<FormFieldInfoResponse> = pdf_fields
+            .into_iter()
+            .map(|f| FormFieldInfoResponse {
+                page: f.page,
+                name: f.name,
+                field_type: f.field_type,
+                value: f.value,
+                is_checked: f.is_checked,
+                is_read_only: f.is_read_only,
+                is_required: f.is_required,
+                options: f.options.map(|opts| {
+                    opts.into_iter()
+                        .map(|o| FormFieldOptionInfoResponse {
+                            label: o.label,
+                            is_selected: o.is_selected,
+                        })
+                        .collect()
+                }),
+                properties: FormFieldPropertiesResponse {
+                    is_multiline: f.properties.is_multiline,
+                    is_password: f.properties.is_password,
+                    is_editable: f.properties.is_editable,
+                    is_multiselect: f.properties.is_multiselect,
+                },
+            })
+            .collect();
+
+        Ok(ExtractFormFieldsResult {
+            source: source_name,
+            cache_key,
+            fields,
+            total_fields,
+            error: None,
+        })
+    }
+
+    pub async fn process_fill_form(
+        &self,
+        params: &FillFormParams,
+    ) -> crate::error::Result<FillFormResult> {
+        let resolved = self.resolve_source(&params.source).await?;
+        let source_name = resolved.source_name.clone();
+
+        // Convert params to reader types
+        let field_values: Vec<crate::pdf::FormFieldValue> = params
+            .field_values
+            .iter()
+            .map(|fv| crate::pdf::FormFieldValue {
+                name: fv.name.clone(),
+                value: fv.value.clone(),
+                checked: fv.checked,
+            })
+            .collect();
+
+        // Fill form fields
+        let (output_data, fill_result) =
+            fill_form_fields(&resolved.data, params.password.as_deref(), &field_values)?;
+
+        // Get page count of output PDF
+        let output_page_count = PdfReader::open_bytes_metadata_only(&output_data, None)
+            .map(|r| r.page_count())
+            .unwrap_or(0);
+
+        // Always cache the output for chaining operations
+        let output_cache_key = CacheManager::generate_key();
+        self.cache
+            .write()
+            .await
+            .put(output_cache_key.clone(), output_data.clone());
+
+        // Save to file if output_path is specified
+        let output_path = if let Some(ref path_str) = params.output_path {
+            let path = Path::new(path_str);
+
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+
+            std::fs::write(path, &output_data)?;
+            Some(path_str.clone())
+        } else {
+            None
+        };
+
+        let fields_skipped = fill_result
+            .fields_skipped
+            .into_iter()
+            .map(|s| SkippedFieldInfo {
+                name: s.name,
+                reason: s.reason,
+            })
+            .collect();
+
+        Ok(FillFormResult {
+            source: source_name,
+            output_cache_key,
+            fields_filled: fill_result.fields_filled,
+            fields_skipped,
+            output_page_count,
+            output_path,
+            error: None,
+        })
+    }
+
+    pub async fn process_summarize_structure(
+        &self,
+        source: &PdfSource,
+        params: &SummarizeStructureParams,
+    ) -> crate::error::Result<SummarizeStructureResult> {
+        let resolved = self.resolve_source(source).await?;
+        let source_name = resolved.source_name.clone();
+        let file_size = resolved.data.len();
+
+        // Cache if requested
+        let cache_key = if params.cache {
+            let key = CacheManager::generate_key();
+            self.cache
+                .write()
+                .await
+                .put(key.clone(), resolved.data.clone());
+            Some(key)
+        } else {
+            None
+        };
+
+        // Check if encrypted (try opening without password first)
+        let is_encrypted = params.password.is_some();
+
+        // Open PDF with PdfReader to get metadata and outline, then drop to free PDFium
+        let (page_count, metadata, has_outline, outline_items) = {
+            let reader = PdfReader::open_bytes(&resolved.data, params.password.as_deref())?;
+            let page_count = reader.page_count();
+            let meta = reader.metadata();
+            let metadata = Some(PdfMetadata {
+                title: meta.title.clone(),
+                author: meta.author.clone(),
+                subject: meta.subject.clone(),
+                creator: meta.creator.clone(),
+                producer: meta.producer.clone(),
+                creation_date: meta.creation_date.clone(),
+                modification_date: meta.modification_date.clone(),
+                page_count,
+            });
+            let outline = reader.get_outline();
+            let has_outline = !outline.is_empty();
+            let outline_items = Self::count_outline_items(&outline);
+            (page_count, metadata, has_outline, outline_items)
+        }; // reader dropped here, PDFium library freed
+
+        // Get page info — includes dimensions, content stats, image/annotation/link/form counts
+        // All gathered in a single PDFium load to avoid SIGSEGV from multiple library loads
+        let page_infos = get_page_info(&resolved.data, params.password.as_deref())?;
+
+        // Build per-page summaries and aggregate totals
+        let mut total_chars = 0usize;
+        let mut total_words = 0usize;
+        let mut total_estimated_tokens = 0usize;
+        let mut total_images = 0u32;
+        let mut total_links = 0u32;
+        let mut total_annotations = 0u32;
+        let mut total_form_fields = 0u32;
+        let mut form_field_types: HashMap<String, u32> = HashMap::new();
+
+        let mut page_summaries = Vec::with_capacity(page_count as usize);
+
+        for info in &page_infos {
+            total_chars += info.char_count;
+            total_words += info.word_count;
+            total_estimated_tokens += info.estimated_token_count;
+            total_images += info.image_count as u32;
+            total_links += info.link_count as u32;
+            total_annotations += info.annotation_count as u32;
+            total_form_fields += info.form_field_count as u32;
+
+            for ft in &info.form_field_types {
+                *form_field_types.entry(ft.clone()).or_insert(0) += 1;
+            }
+
+            page_summaries.push(PageSummary {
+                page: info.page,
+                width: info.width,
+                height: info.height,
+                char_count: info.char_count,
+                word_count: info.word_count,
+                has_images: info.image_count > 0,
+                has_links: info.link_count > 0,
+                has_annotations: info.annotation_count > 0,
+            });
+        }
+
+        let has_form = total_form_fields > 0;
+        let form_field_count = total_form_fields;
+
+        Ok(SummarizeStructureResult {
+            source: source_name,
+            cache_key,
+            page_count,
+            file_size,
+            metadata,
+            has_outline,
+            outline_items,
+            total_chars,
+            total_words,
+            total_estimated_tokens,
+            pages: page_summaries,
+            total_images,
+            total_links,
+            total_annotations,
+            has_form,
+            form_field_count,
+            form_field_types,
+            is_encrypted,
+            error: None,
+        })
+    }
+
+    fn count_outline_items(items: &[crate::pdf::OutlineItem]) -> u32 {
+        let mut count = items.len() as u32;
+        for item in items {
+            count += Self::count_outline_items(&item.children);
+        }
+        count
     }
 
     /// List PDF files in a directory (public for testing)

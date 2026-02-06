@@ -14,4 +14,5 @@ pub mod source;
 pub use error::{Error, Result};
 pub use server::{
     run_server, run_server_with_dirs, ListPdfsParams, ListPdfsResult, PdfFileInfo, PdfServer,
+    PdfSource,
 };
