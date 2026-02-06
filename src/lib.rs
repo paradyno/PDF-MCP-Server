@@ -1,0 +1,14 @@
+//! PDF MCP Server Library
+//!
+//! This crate provides MCP tools for PDF processing:
+//! - `extract_text`: Extract text content from PDFs
+//! - `extract_outline`: Extract PDF bookmarks/table of contents
+//! - `search`: Search for text within PDFs
+
+pub mod error;
+pub mod pdf;
+pub mod server;
+pub mod source;
+
+pub use error::{Error, Result};
+pub use server::run_server;

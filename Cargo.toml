@@ -1,0 +1,64 @@
+[package]
+name = "pdf-mcp-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Paradyno LLC"]
+description = "MCP server for PDF processing - text extraction, search, and outline extraction"
+license = "Apache-2.0"
+repository = "https://github.com/paradyno/pdf-mcp-server"
+readme = "README.md"
+keywords = ["mcp", "pdf", "claude", "ai", "llm"]
+categories = ["command-line-utilities", "text-processing"]
+
+[dependencies]
+# MCP SDK
+rmcp = { version = "0.14", features = ["server", "transport-io", "macros", "schemars"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# PDF processing
+pdfium-render = "0.8"
+image = "0.25"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+base64 = "0.22"
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+tempfile = "3"
+lru = "0.12"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+pretty_assertions = "1"
+rstest = "0.24"
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[[bin]]
+name = "pdf-mcp-server"
+path = "src/main.rs"
+
+[lib]
+name = "pdf_mcp_server"
+path = "src/lib.rs"

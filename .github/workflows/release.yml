@@ -1,0 +1,197 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  PDFIUM_VERSION: "7651"
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            pdfium_arch: linux-x64
+            artifact_name: pdf-mcp-server
+            asset_name: pdf-mcp-server-linux-x64
+
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            pdfium_arch: linux-arm64
+            artifact_name: pdf-mcp-server
+            asset_name: pdf-mcp-server-linux-arm64
+            cross: true
+
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            pdfium_arch: mac-x64
+            artifact_name: pdf-mcp-server
+            asset_name: pdf-mcp-server-darwin-x64
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            pdfium_arch: mac-arm64
+            artifact_name: pdf-mcp-server
+            asset_name: pdf-mcp-server-darwin-arm64
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            pdfium_arch: win-x64
+            artifact_name: pdf-mcp-server.exe
+            asset_name: pdf-mcp-server-windows-x64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Cross-compilation setup for Linux ARM64
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      # System dependencies
+      - name: Install system dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest' && !matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qpdf libclang-dev
+
+      - name: Install system dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install qpdf
+
+      - name: Install system dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install qpdf
+
+      # Download PDFium
+      - name: Download PDFium (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p ${{ runner.temp }}/pdfium
+          curl -L "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${{ env.PDFIUM_VERSION }}/pdfium-${{ matrix.pdfium_arch }}.tgz" | \
+            tar -xz -C ${{ runner.temp }}/pdfium
+          echo "PDFIUM_PATH=${{ runner.temp }}/pdfium" >> $GITHUB_ENV
+
+      - name: Download PDFium (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $pdfiumDir = "${{ runner.temp }}\pdfium"
+          New-Item -ItemType Directory -Force -Path $pdfiumDir
+          $url = "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${{ env.PDFIUM_VERSION }}/pdfium-${{ matrix.pdfium_arch }}.tgz"
+          Write-Host "Downloading PDFium from $url"
+          Invoke-WebRequest -Uri $url -OutFile pdfium.tgz
+          Write-Host "Extracting to $pdfiumDir"
+          tar -xzf pdfium.tgz -C $pdfiumDir
+          Write-Host "Contents of ${pdfiumDir}:"
+          Get-ChildItem -Path $pdfiumDir -Recurse -Name | Select-Object -First 10
+          echo "PDFIUM_PATH=$pdfiumDir" >> $env:GITHUB_ENV
+
+      # Build
+      - name: Build (native)
+        if: "!matrix.cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      # Package
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          cp ${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+          chmod +x ${{ matrix.asset_name }}
+          tar -czvf ${{ matrix.asset_name }}.tar.gz ${{ matrix.asset_name }}
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          cp ${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+          7z a ${{ matrix.asset_name }}.zip ${{ matrix.asset_name }}
+
+      # Upload artifact
+      - name: Upload artifact (Unix)
+        if: matrix.os != 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}.tar.gz
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}.zip
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish npm wrapper package
+  publish-npm:
+    name: Publish npm Package
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: npm/binaries
+
+      - name: Prepare npm package
+        working-directory: npm
+        run: |
+          # Extract version from tag (remove 'v' prefix)
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version || true
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

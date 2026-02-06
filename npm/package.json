@@ -1,0 +1,45 @@
+{
+  "name": "@paradyno/pdf-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for PDF processing - text extraction, search, and outline extraction",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paradyno/pdf-mcp-server"
+  },
+  "homepage": "https://github.com/paradyno/pdf-mcp-server",
+  "bugs": {
+    "url": "https://github.com/paradyno/pdf-mcp-server/issues"
+  },
+  "keywords": [
+    "mcp",
+    "pdf",
+    "claude",
+    "ai",
+    "llm",
+    "text-extraction",
+    "pdf-search"
+  ],
+  "bin": {
+    "pdf-mcp-server": "./bin/run.js"
+  },
+  "files": [
+    "bin",
+    "binaries"
+  ],
+  "scripts": {
+    "postinstall": "node bin/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

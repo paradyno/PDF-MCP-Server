@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  PDFIUM_VERSION: "7651"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qpdf libclang-dev
+      - name: Download PDFium
+        run: |
+          mkdir -p /opt/pdfium
+          curl -L "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${PDFIUM_VERSION}/pdfium-linux-x64.tgz" | \
+            sudo tar -xz -C /opt/pdfium
+          echo "PDFIUM_PATH=/opt/pdfium" >> $GITHUB_ENV
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            pdfium_arch: linux-x64
+          - os: macos-latest
+            pdfium_arch: mac-arm64
+          - os: windows-latest
+            pdfium_arch: win-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qpdf libclang-dev
+
+      - name: Install system dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install qpdf
+
+      - name: Install system dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install qpdf
+
+      - name: Download PDFium (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p ${{ runner.temp }}/pdfium
+          curl -L "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${{ env.PDFIUM_VERSION }}/pdfium-${{ matrix.pdfium_arch }}.tgz" | \
+            tar -xz -C ${{ runner.temp }}/pdfium
+          echo "PDFIUM_PATH=${{ runner.temp }}/pdfium" >> $GITHUB_ENV
+
+      - name: Download PDFium (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $pdfiumDir = "${{ runner.temp }}\pdfium"
+          New-Item -ItemType Directory -Force -Path $pdfiumDir
+          $url = "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${{ env.PDFIUM_VERSION }}/pdfium-${{ matrix.pdfium_arch }}.tgz"
+          Write-Host "Downloading PDFium from $url"
+          Invoke-WebRequest -Uri $url -OutFile pdfium.tgz
+          Write-Host "Extracting to $pdfiumDir"
+          tar -xzf pdfium.tgz -C $pdfiumDir
+          Write-Host "Contents of ${pdfiumDir}:"
+          Get-ChildItem -Path $pdfiumDir -Recurse -Name | Select-Object -First 20
+          # Find and copy pdfium.dll to current directory
+          $dll = Get-ChildItem -Path $pdfiumDir -Recurse -Filter "pdfium.dll" | Select-Object -First 1
+          if ($dll) {
+            Copy-Item $dll.FullName -Destination .
+            Write-Host "Copied $($dll.FullName) to current directory"
+          } else {
+            Write-Error "pdfium.dll not found in $pdfiumDir"
+            exit 1
+          }
+          echo "PDFIUM_PATH=$pdfiumDir" >> $env:GITHUB_ENV
+
+      - name: Run tests (Unix)
+        if: matrix.os != 'windows-latest'
+        run: cargo test --all-features
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/pdfium/lib
+          DYLD_LIBRARY_PATH: ${{ runner.temp }}/pdfium/lib
+
+      - name: Run tests (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cargo test --all-features
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qpdf libclang-dev
+      - name: Download PDFium
+        run: |
+          mkdir -p /opt/pdfium
+          curl -L "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${PDFIUM_VERSION}/pdfium-linux-x64.tgz" | \
+            sudo tar -xz -C /opt/pdfium
+          echo "PDFIUM_PATH=/opt/pdfium" >> $GITHUB_ENV
+      - name: Generate coverage
+        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+        env:
+          LD_LIBRARY_PATH: /opt/pdfium/lib
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

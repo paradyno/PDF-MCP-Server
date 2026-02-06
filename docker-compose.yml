@@ -1,0 +1,77 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    working_dir: /app
+    environment:
+      - CARGO_HOME=/usr/local/cargo
+      - PDFIUM_PATH=/opt/pdfium
+      - RUST_BACKTRACE=1
+    stdin_open: true
+    tty: true
+
+  # Run tests
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    working_dir: /app
+    environment:
+      - CARGO_HOME=/usr/local/cargo
+      - PDFIUM_PATH=/opt/pdfium
+      - RUST_BACKTRACE=1
+    command: cargo nextest run
+
+  # Run tests with coverage
+  coverage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    working_dir: /app
+    environment:
+      - CARGO_HOME=/usr/local/cargo
+      - PDFIUM_PATH=/opt/pdfium
+      - RUST_BACKTRACE=1
+    command: cargo llvm-cov --html --output-dir coverage
+
+  # Format check
+  fmt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+    working_dir: /app
+    command: cargo fmt --all -- --check
+
+  # Lint
+  clippy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    working_dir: /app
+    environment:
+      - PDFIUM_PATH=/opt/pdfium
+    command: cargo clippy --all-targets --all-features -- -D warnings
+
+volumes:
+  cargo-cache:
+  target-cache:
