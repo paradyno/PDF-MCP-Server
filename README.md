@@ -514,24 +514,29 @@ When `cache: true` is specified, the server returns a `cache_key` that can be us
 
 ### Using Docker (Recommended)
 
-```bash
-# Build the development image
-docker build -t pdf-mcp-dev .
+The project uses Docker Compose with profiles to separate development and production environments.
 
+```bash
 # Build
-docker run --rm -v "$(pwd)":/app -w /app pdf-mcp-dev cargo build
+docker compose --profile dev run --rm dev cargo build
 
 # Run tests
-docker run --rm -v "$(pwd)":/app -w /app pdf-mcp-dev cargo test
+docker compose --profile dev run --rm test
 
 # Run tests with coverage
-docker run --rm -v "$(pwd)":/app -w /app pdf-mcp-dev cargo llvm-cov --html
+docker compose --profile dev run --rm coverage
 
 # Format code
-docker run --rm -v "$(pwd)":/app -w /app pdf-mcp-dev cargo fmt
+docker compose --profile dev run --rm dev cargo fmt --all
 
 # Lint
-docker run --rm -v "$(pwd)":/app -w /app pdf-mcp-dev cargo clippy
+docker compose --profile dev run --rm clippy
+
+# Build production image (minimal runtime, ~120MB)
+docker compose --profile prod build production
+
+# Clean up dev images when no longer needed
+docker compose --profile dev down --rmi local
 ```
 
 ### Native Development

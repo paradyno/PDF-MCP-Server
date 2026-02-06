@@ -1,5 +1,9 @@
 # CLAUDE.md - PDF MCP Server Development Guide
 
+## Rules
+
+- After making any changes to the project (code, configuration, build system, commands, etc.), always check whether `README.md` and `CLAUDE.md` need to be updated to reflect those changes. If updates are needed, propose the changes to the user.
+
 ## Project Overview
 
 This is a Model Context Protocol (MCP) server for PDF operations, implemented in Rust. It provides tools for extracting text, metadata, annotations, images, and links from PDFs, as well as manipulation operations like splitting, merging, compression, and password protection.
@@ -37,26 +41,32 @@ src/
 
 ## Development Commands
 
-All commands run via Docker Compose:
+All commands run via Docker Compose with profiles (`dev` for development, `prod` for production):
 
 ```bash
 # Build
-docker compose run --rm dev cargo build
+docker compose --profile dev run --rm dev cargo build
 
 # Run clippy (linting)
-docker compose run --rm clippy
+docker compose --profile dev run --rm clippy
 
 # Format check
-docker compose run --rm dev cargo fmt --all -- --check
+docker compose --profile dev run --rm dev cargo fmt --all -- --check
 
 # Format fix
-docker compose run --rm dev cargo fmt --all
+docker compose --profile dev run --rm dev cargo fmt --all
 
 # Run tests (using nextest)
-docker compose run --rm test
+docker compose --profile dev run --rm test
 
 # Run specific test
-docker compose run --rm dev cargo test --test integration_test test_name -- --nocapture
+docker compose --profile dev run --rm dev cargo test --test integration_test test_name -- --nocapture
+
+# Build production image (minimal runtime, ~120MB)
+docker compose --profile prod build production
+
+# Clean up dev images when no longer needed
+docker compose --profile dev down --rmi local
 ```
 
 ## Adding a New Tool

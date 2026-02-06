@@ -1,8 +1,10 @@
 services:
   dev:
+    profiles: ["dev"]
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
     volumes:
       - .:/app
       - cargo-cache:/usr/local/cargo/registry
@@ -17,9 +19,11 @@ services:
 
   # Run tests
   test:
+    profiles: ["dev"]
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
     volumes:
       - .:/app
       - cargo-cache:/usr/local/cargo/registry
@@ -33,9 +37,11 @@ services:
 
   # Run tests with coverage
   coverage:
+    profiles: ["dev"]
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
     volumes:
       - .:/app
       - cargo-cache:/usr/local/cargo/registry
@@ -49,9 +55,11 @@ services:
 
   # Format check
   fmt:
+    profiles: ["dev"]
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
     volumes:
       - .:/app
       - cargo-cache:/usr/local/cargo/registry
@@ -60,9 +68,11 @@ services:
 
   # Lint
   clippy:
+    profiles: ["dev"]
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
     volumes:
       - .:/app
       - cargo-cache:/usr/local/cargo/registry
@@ -71,6 +81,17 @@ services:
     environment:
       - PDFIUM_PATH=/opt/pdfium
     command: cargo clippy --all-targets --all-features -- -D warnings
+
+  # Production runtime
+  production:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    environment:
+      - PDFIUM_PATH=/opt/pdfium
+      - RUST_BACKTRACE=1
 
 volumes:
   cargo-cache:
