@@ -7,7 +7,8 @@ mod reader;
 
 pub use qpdf::QpdfWrapper;
 pub use reader::{
-    extract_annotations, extract_images, extract_images_from_pages, extract_links, get_page_info,
-    parse_page_range, ExtractedImage, OutlineItem, PdfAnnotation, PdfLink, PdfMetadataInfo,
-    PdfPageInfo, PdfReader,
+    extract_annotations, extract_images, extract_images_from_pages, extract_links,
+    extract_text_with_options, get_page_info, parse_page_range, CharInfo, ExtractedImage, LineInfo,
+    OutlineItem, PdfAnnotation, PdfLink, PdfMetadataInfo, PdfPageInfo, PdfReader,
+    TextExtractionConfig,
 };

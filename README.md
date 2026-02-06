@@ -8,7 +8,7 @@ A high-performance MCP (Model Context Protocol) server for PDF processing, built
 
 ## Overview
 
-PDF MCP Server provides AI agents with powerful PDF processing capabilities through the Model Context Protocol. It uses **PDFium** for text extraction and **qpdf** for PDF manipulation, ensuring a clean Apache 2.0 licensed solution.
+PDF MCP Server provides AI agents with powerful PDF processing capabilities through the Model Context Protocol. It uses **PDFium** for text extraction and **qpdf** (vendored FFI) for PDF manipulation, ensuring a clean Apache 2.0 licensed solution with no external runtime dependencies beyond PDFium.
 
 ### Key Features
 
@@ -20,7 +20,9 @@ PDF MCP Server provides AI agents with powerful PDF processing capabilities thro
 - **Link Extraction** - Extract hyperlinks and internal page navigation
 - **Page Info** - Get page dimensions, word/char counts, token estimates, and file sizes
 - **Search** - Full-text search within PDFs with context
+- **PDF Discovery** - List PDF files in directories with filtering
 - **PDF Manipulation** - Split, merge, compress, protect, and unprotect PDFs
+- **MCP Resources** - Expose PDFs as MCP resources for direct client access
 - **Batch Processing** - Process multiple PDFs in parallel
 - **Caching** - Optional caching for repeated operations and chained operations
 - **Password Support** - Handle password-protected PDFs
@@ -49,6 +51,23 @@ Download the latest release for your platform from [GitHub Releases](https://git
 
 ```bash
 cargo install --git https://github.com/paradyno/pdf-mcp-server
+```
+
+## Command Line Options
+
+```
+USAGE:
+    pdf-mcp-server [OPTIONS]
+
+OPTIONS:
+    -r, --resource-dir <PATH>    Add a directory to expose as PDF resources
+                                 Can be specified multiple times
+    -h, --help                   Print help information
+    -V, --version                Print version information
+
+ENVIRONMENT VARIABLES:
+    PDF_RESOURCE_DIRS            Colon-separated list of resource directories
+                                 Example: /documents:/data/pdfs
 ```
 
 ## Configuration
@@ -108,7 +127,13 @@ Add to your MCP settings:
 
 ### `extract_text`
 
-Extract text content from PDF files.
+Extract text content from PDF files with LLM-optimized formatting.
+
+Text extraction is automatically optimized for LLM consumption:
+- **Paragraph detection** - Detects paragraph breaks by line spacing
+- **Multi-column support** - Automatically detects and reorders multi-column layouts
+- **Watermark removal** - Removes centered watermarks (e.g., "CONFIDENTIAL", "DRAFT")
+- **Dynamic thresholds** - Adjusts spacing detection based on font size
 
 **Parameters:**
 
@@ -117,6 +142,7 @@ Extract text content from PDF files.
 | `sources` | array | Yes | - | PDF sources (see Source Types below) |
 | `pages` | string | No | all | Page selection (e.g., "1-5,10,15-20") |
 | `include_metadata` | boolean | No | true | Include PDF metadata |
+| `include_images` | boolean | No | false | Include extracted images (base64 PNG) |
 | `password` | string | No | - | PDF password if encrypted |
 | `cache` | boolean | No | false | Enable caching |
 
@@ -128,7 +154,6 @@ Extract text content from PDF files.
   "pages": "1-10",
   "include_metadata": true
 }
-```
 
 ### `extract_outline`
 
@@ -421,6 +446,53 @@ Actual token counts vary by model (GPT, Claude, etc.). Use as rough guidance onl
 
 By default, the tool calculates actual file sizes by splitting each page (~16ms/page). This provides accurate size information including shared resources (fonts, images). Use `skip_file_sizes=true` to skip this calculation for faster performance.
 
+### `list_pdfs`
+
+List PDF files in a directory with optional filtering. Useful for discovering available PDFs before processing.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `directory` | string | Yes | - | Directory to search for PDF files |
+| `recursive` | boolean | No | false | Search subdirectories recursively |
+| `pattern` | string | No | - | Filename pattern to filter (e.g., "report*.pdf") |
+
+**Example:**
+
+```json
+{
+  "directory": "/documents",
+  "recursive": true,
+  "pattern": "invoice*.pdf"
+}
+```
+
+**Response:**
+
+```json
+{
+  "results": [{
+    "directory": "/documents",
+    "files": [
+      {
+        "path": "/documents/invoice-2024-01.pdf",
+        "name": "invoice-2024-01.pdf",
+        "size": 102400,
+        "modified": "2024-01-15T10:30:00Z"
+      },
+      {
+        "path": "/documents/2024/invoice-2024-02.pdf",
+        "name": "invoice-2024-02.pdf",
+        "size": 98304,
+        "modified": "2024-02-15T09:15:00Z"
+      }
+    ],
+    "total_count": 2
+  }]
+}
+```
+
 ### `compress_pdf`
 
 Compress a PDF file to reduce its size using stream optimization, object deduplication, and image optimization.
@@ -478,6 +550,92 @@ PDF sources can be specified in multiple ways:
 // Cache reference (from previous operation)
 { "cache_key": "abc123" }
 ```
+
+## MCP Resources
+
+The PDF MCP Server can expose PDF files as MCP Resources, allowing clients to discover and read PDFs directly through the MCP protocol.
+
+### Enabling Resources
+
+Resources are enabled by configuring resource directories when starting the server. All PDFs in configured directories are automatically exposed as resources.
+
+**Command Line:**
+
+```bash
+# Single directory
+pdf-mcp-server --resource-dir /documents
+
+# Multiple directories
+pdf-mcp-server --resource-dir /documents --resource-dir /data/pdfs
+
+# Short form
+pdf-mcp-server -r /documents -r /data/pdfs
+```
+
+**Environment Variable:**
+
+```bash
+# Colon-separated list of directories
+PDF_RESOURCE_DIRS=/documents:/data/pdfs pdf-mcp-server
+```
+
+**Claude Desktop Configuration:**
+
+```json
+{
+  "mcpServers": {
+    "pdf": {
+      "command": "npx",
+      "args": ["@paradyno/pdf-mcp-server", "--resource-dir", "/documents"],
+      "env": {
+        "PDF_RESOURCE_DIRS": "/data/pdfs:/shared/documents"
+      }
+    }
+  }
+}
+```
+
+Both methods can be combined - command line arguments are added to environment variable paths.
+
+### Resource URIs
+
+PDFs are exposed with `file://` URIs:
+
+```
+file:///documents/report.pdf
+file:///documents/2024/invoice.pdf
+```
+
+### Resource Operations
+
+**List Resources** (`resources/list`):
+
+Returns all PDF files in configured directories with metadata:
+- URI
+- Name
+- MIME type (`application/pdf`)
+- Size
+- Description (includes file size and modification date)
+
+**Read Resource** (`resources/read`):
+
+Returns the extracted text content from the PDF, formatted for LLM consumption:
+- Page-by-page text extraction
+- LLM-optimized formatting (paragraph detection, column reordering, etc.)
+- Returned as `text/plain` content
+
+### Resources vs Tools vs Caching
+
+| Feature | Purpose | Use Case |
+|---------|---------|----------|
+| **Tools** | Active PDF processing | Extract text, search, manipulate PDFs |
+| **Resources** | Passive file discovery | Browse available PDFs, read content |
+| **CacheRef** | Tool chaining | Pass output between tools (e.g., split → extract) |
+
+All three mechanisms are complementary:
+- Use **Resources** to discover and preview PDFs
+- Use **Tools** for specific processing tasks
+- Use **CacheRef** to chain multiple operations efficiently
 
 ## Caching
 
@@ -598,7 +756,7 @@ pdf-mcp-server/
 ├─────────────────────────────────────────────────────┤
 │              PDF Processing Layer                   │
 │  ┌───────────────────┐  ┌───────────────────┐       │
-│  │   pdfium-render   │  │       qpdf        │       │
+│  │   pdfium-render   │  │   qpdf (FFI)      │       │
 │  │   (reading)       │  │   (manipulation)  │       │
 │  └───────────────────┘  └───────────────────┘       │
 └─────────────────────────────────────────────────────┘
@@ -626,6 +784,18 @@ pdf-mcp-server/
 - [x] extract_links - Extract hyperlinks and internal links
 - [x] get_page_info - Get page dimensions and token estimates
 
+### Phase 2.5: LLM-Optimized Text Extraction (Complete)
+- [x] Dynamic thresholds based on font size
+- [x] Paragraph detection by line spacing
+- [x] Multi-column layout detection
+- [x] Watermark removal (center mode)
+- [x] Simplified API (LLM optimization enabled by default)
+
+### Phase 2.6: PDF Discovery & MCP Resources (Complete)
+- [x] list_pdfs - Discover PDF files in directories
+- [x] MCP Resources - Expose PDFs as standard MCP resources
+- [x] Resource directory configuration
+
 ### Phase 3: Advanced Features (Planned)
 - [ ] rotate_pages - Rotate specific pages
 - [ ] convert_to_images - Render PDF pages as images (PNG/JPEG)
@@ -639,6 +809,27 @@ pdf-mcp-server/
 - [ ] PDF/A validation
 - [ ] Digital signature verification
 
+### Waiting for MCP Protocol
+
+The following features depend on MCP protocol enhancements currently under discussion:
+
+- [ ] **Large file upload from client** - MCP lacks a standard API for uploading large files (>20MB) from clients to servers. Currently discussed in [#1197](https://github.com/orgs/modelcontextprotocol/discussions/1197), [#1220](https://github.com/orgs/modelcontextprotocol/discussions/1220), [#1659](https://github.com/orgs/modelcontextprotocol/discussions/1659). Multimodal support is planned for 2026.
+- [ ] **Chunked file transfer** - No standard chunked upload/download mechanism exists yet
+
+Current workarounds for large files:
+- Shared filesystem (`path`)
+- Object storage with pre-signed URLs (`url`)
+- Base64 encoding (limited by client/memory constraints)
+
+### Design Decisions: Deferred Features
+
+The following features were considered but deferred as they provide limited value for LLM use cases:
+
+- **Hyphenation merging** - LLMs understand hyphenated words without merging
+- **Fixed-pitch mode** - Limited use cases (monospace fonts, ASCII art)
+- **Bounding box output** - LLMs don't need coordinate information
+- **Invisible text removal** - Not supported by pdfium-render API
+
 ## License
 
 Apache License 2.0
@@ -647,5 +838,5 @@ Apache License 2.0
 
 - [PDFium](https://pdfium.googlesource.com/pdfium/) - PDF rendering engine (Apache 2.0)
 - [pdfium-render](https://crates.io/crates/pdfium-render) - Rust bindings for PDFium (Apache 2.0)
-- [qpdf](https://qpdf.sourceforge.io/) - PDF transformation library (Apache 2.0)
+- [qpdf](https://qpdf.sourceforge.io/) - PDF transformation library, vendored via FFI (Apache 2.0)
 - [rmcp](https://crates.io/crates/rmcp) - Rust MCP SDK

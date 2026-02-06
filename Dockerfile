@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     pkg-config \
     libclang-dev \
-    qpdf \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -71,7 +70,6 @@ RUN touch src/main.rs src/lib.rs && cargo build --release
 FROM debian:trixie-slim AS production
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    qpdf \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -80,7 +78,7 @@ COPY --from=builder /opt/pdfium/lib/ /opt/pdfium/lib/
 ENV PDFIUM_PATH=/opt/pdfium
 ENV LD_LIBRARY_PATH=/opt/pdfium/lib
 
-# Copy the compiled binary
+# Copy the compiled binary (qpdf is statically linked via vendored FFI)
 COPY --from=builder /app/target/release/pdf-mcp-server /usr/local/bin/pdf-mcp-server
 
 RUN useradd --create-home --shell /bin/sh appuser

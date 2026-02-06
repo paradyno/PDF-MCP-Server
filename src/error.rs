@@ -60,10 +60,6 @@ pub enum Error {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    /// qpdf not found
-    #[error("qpdf not found. Please install qpdf.")]
-    QpdfNotFound,
-
     /// qpdf error
     #[error("qpdf error: {reason}")]
     QpdfError { reason: String },

@@ -1,30 +1,134 @@
-//! qpdf CLI wrapper for PDF manipulation
+//! qpdf FFI wrapper for PDF manipulation
 //!
-//! This module provides a wrapper around the qpdf command-line tool
-//! for performing PDF page operations like splitting, merging, and rotating.
+//! This module provides PDF page operations like splitting, merging,
+//! encryption/decryption, and compression using the qpdf crate (vendored FFI).
 
 use crate::error::{Error, Result};
-use std::process::Command;
-use tempfile::NamedTempFile;
+use qpdf::{EncryptionParams, EncryptionParamsR6, ObjectStreamMode, PrintPermission, QPdf};
 
-/// Wrapper for qpdf CLI operations
+/// Wrapper for qpdf operations via FFI
 pub struct QpdfWrapper;
 
-impl QpdfWrapper {
-    /// Check if qpdf is available on the system
-    pub fn check_available() -> Result<()> {
-        let output = Command::new("qpdf")
-            .arg("--version")
-            .output()
-            .map_err(|_| Error::QpdfNotFound)?;
-
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(Error::QpdfNotFound)
-        }
+/// Parse a qpdf-compatible page range string into 0-indexed page indices.
+///
+/// Supports:
+/// - `N` (single page, 1-indexed)
+/// - `N-M` (range)
+/// - `z` (last page), `rN` (N-th from last)
+/// - `z-1` (reverse all pages)
+/// - `N-M:odd`, `N-M:even` (odd/even filter)
+/// - Comma-separated combinations
+fn parse_qpdf_page_range(range: &str, num_pages: u32) -> Result<Vec<u32>> {
+    if num_pages == 0 {
+        return Err(Error::QpdfError {
+            reason: "PDF has no pages".to_string(),
+        });
     }
 
+    let mut all_indices: Vec<u32> = Vec::new();
+
+    for part in range.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        // Check for :odd or :even modifier
+        let (range_part, modifier) = if let Some(r) = part.strip_suffix(":odd") {
+            (r, Some("odd"))
+        } else if let Some(r) = part.strip_suffix(":even") {
+            (r, Some("even"))
+        } else {
+            (part, None)
+        };
+
+        // Parse the range part into a list of 1-indexed page numbers
+        let pages = if range_part.contains('-') {
+            // Range: N-M
+            let parts: Vec<&str> = range_part.splitn(2, '-').collect();
+            let start = resolve_page_ref(parts[0], num_pages)?;
+            let end = resolve_page_ref(parts[1], num_pages)?;
+
+            if start <= end {
+                (start..=end).collect::<Vec<u32>>()
+            } else {
+                // Reverse range
+                (end..=start).rev().collect::<Vec<u32>>()
+            }
+        } else {
+            // Single page
+            let page = resolve_page_ref(range_part, num_pages)?;
+            vec![page]
+        };
+
+        // Apply odd/even modifier
+        let filtered = match modifier {
+            Some("odd") => pages.into_iter().filter(|p| p % 2 == 1).collect(),
+            Some("even") => pages.into_iter().filter(|p| p % 2 == 0).collect(),
+            _ => pages,
+        };
+
+        all_indices.extend(filtered);
+    }
+
+    if all_indices.is_empty() {
+        return Err(Error::InvalidPageRange {
+            range: range.to_string(),
+        });
+    }
+
+    // Convert to 0-indexed
+    Ok(all_indices.iter().map(|p| p - 1).collect())
+}
+
+/// Resolve a page reference (1-indexed) to a page number.
+/// Handles: numeric "N", "z" (last), "rN" (N-th from last)
+fn resolve_page_ref(s: &str, num_pages: u32) -> Result<u32> {
+    let s = s.trim();
+    if s == "z" {
+        return Ok(num_pages);
+    }
+    if let Some(r_num) = s.strip_prefix('r') {
+        let n: u32 = r_num.parse().map_err(|_| Error::InvalidPageRange {
+            range: s.to_string(),
+        })?;
+        if n == 0 || n > num_pages {
+            return Err(Error::InvalidPageRange {
+                range: s.to_string(),
+            });
+        }
+        return Ok(num_pages - n + 1);
+    }
+    let page: u32 = s.parse().map_err(|_| Error::InvalidPageRange {
+        range: s.to_string(),
+    })?;
+    if page == 0 || page > num_pages {
+        return Err(Error::InvalidPageRange {
+            range: format!("page {} out of range (1-{})", page, num_pages),
+        });
+    }
+    Ok(page)
+}
+
+/// Helper: open a QPdf from memory, optionally with password
+fn open_qpdf(data: &[u8], password: Option<&str>) -> Result<QPdf> {
+    match password {
+        Some(pwd) => QPdf::read_from_memory_encrypted(data, pwd).map_err(map_qpdf_error),
+        None => QPdf::read_from_memory(data).map_err(map_qpdf_error),
+    }
+}
+
+/// Map qpdf crate errors to our error types
+fn map_qpdf_error(e: qpdf::QPdfError) -> Error {
+    match e.error_code() {
+        qpdf::QPdfErrorCode::InvalidPassword => Error::IncorrectPassword,
+        _ => Error::QpdfError {
+            reason: e.to_string(),
+        },
+    }
+}
+
+impl QpdfWrapper {
     /// Extract specific pages from a PDF
     ///
     /// # Arguments
@@ -35,54 +139,25 @@ impl QpdfWrapper {
     /// # Returns
     /// The extracted pages as a new PDF in bytes
     pub fn split_pages(input_data: &[u8], pages: &str, password: Option<&str>) -> Result<Vec<u8>> {
-        // Create temporary files for input and output
-        let input_file = NamedTempFile::new()?;
-        let output_file = NamedTempFile::new()?;
+        let source = open_qpdf(input_data, password)?;
+        let num_pages = source.get_num_pages().map_err(map_qpdf_error)?;
 
-        // Write input data to temporary file
-        std::fs::write(input_file.path(), input_data)?;
+        let indices = parse_qpdf_page_range(pages, num_pages)?;
 
-        // Build qpdf command
-        let mut cmd = Command::new("qpdf");
+        let dest = QPdf::empty();
 
-        // Add password if provided
-        if let Some(pwd) = password {
-            cmd.arg(format!("--password={}", pwd));
+        for &idx in &indices {
+            let page = source.get_page(idx).ok_or_else(|| Error::PageOutOfBounds {
+                page: idx + 1,
+                total: num_pages,
+            })?;
+            let copied = dest.copy_from_foreign(&page);
+            dest.add_page(&copied, false).map_err(map_qpdf_error)?;
         }
 
-        // Input file and page selection
-        cmd.arg(input_file.path());
-        cmd.arg("--pages");
-        cmd.arg("."); // "." refers to the input file
-        cmd.arg(pages);
-        cmd.arg("--");
-        // Decrypt output to make it easier to work with
-        cmd.arg("--decrypt");
-        cmd.arg(output_file.path());
-
-        // Execute qpdf
-        let output = cmd.output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // Check for common error patterns
-            if stderr.contains("invalid password") || stderr.contains("password") {
-                return Err(Error::IncorrectPassword);
-            }
-            if stderr.contains("invalid page range") || stderr.contains("page range") {
-                return Err(Error::InvalidPageRange {
-                    range: pages.to_string(),
-                });
-            }
-            return Err(Error::QpdfError {
-                reason: stderr.to_string(),
-            });
-        }
-
-        // Read output file
-        let result = std::fs::read(output_file.path())?;
-
-        Ok(result)
+        let mut writer = dest.writer();
+        writer.preserve_encryption(false);
+        writer.write_to_memory().map_err(map_qpdf_error)
     }
 
     /// Merge multiple PDFs into one
@@ -99,53 +174,24 @@ impl QpdfWrapper {
             });
         }
 
-        // Create temporary files for all inputs and output
-        let mut input_files: Vec<NamedTempFile> = Vec::new();
+        let dest = QPdf::empty();
+
         for (i, input_data) in inputs.iter().enumerate() {
-            let input_file = NamedTempFile::new()?;
-            std::fs::write(input_file.path(), input_data).map_err(|e| Error::QpdfError {
-                reason: format!("Failed to write input file {}: {}", i, e),
+            let source = QPdf::read_from_memory(input_data).map_err(|e| Error::QpdfError {
+                reason: format!("Failed to read input PDF {}: {}", i, e),
             })?;
-            input_files.push(input_file);
-        }
 
-        let output_file = NamedTempFile::new()?;
+            let pages = source.get_pages().map_err(|e| Error::QpdfError {
+                reason: format!("Failed to get pages from input PDF {}: {}", i, e),
+            })?;
 
-        // Build qpdf command: qpdf --empty --pages file1.pdf file2.pdf ... -- output.pdf
-        let mut cmd = Command::new("qpdf");
-        cmd.arg("--empty");
-        cmd.arg("--pages");
-
-        // Add all input files with full page range
-        for input_file in &input_files {
-            cmd.arg(input_file.path());
-            cmd.arg("1-z"); // All pages from each file
-        }
-
-        cmd.arg("--");
-        cmd.arg(output_file.path());
-
-        // Execute qpdf
-        let output = cmd.output()?;
-
-        // Check for success or warning (qpdf may return non-zero for warnings)
-        // qpdf outputs warnings to stderr
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        // If command failed, check if it was actually a success with warnings
-        if !output.status.success() {
-            // qpdf says "operation succeeded with warnings" in stderr when it completes with warnings
-            if !stderr.contains("operation succeeded") {
-                return Err(Error::QpdfError {
-                    reason: stderr.to_string(),
-                });
+            for page in &pages {
+                let copied = dest.copy_from_foreign(page);
+                dest.add_page(&copied, false).map_err(map_qpdf_error)?;
             }
         }
 
-        // Read output file
-        let result = std::fs::read(output_file.path())?;
-
-        Ok(result)
+        dest.writer().write_to_memory().map_err(map_qpdf_error)
     }
 
     /// Encrypt a PDF with password protection
@@ -171,73 +217,34 @@ impl QpdfWrapper {
         allow_modify: bool,
         source_password: Option<&str>,
     ) -> Result<Vec<u8>> {
-        // Create temporary files for input and output
-        let input_file = NamedTempFile::new()?;
-        let output_file = NamedTempFile::new()?;
+        let qpdf = open_qpdf(input_data, source_password)?;
 
-        // Write input data to temporary file
-        std::fs::write(input_file.path(), input_data)?;
+        let print_perm = match allow_print {
+            "none" => PrintPermission::None,
+            "low" => PrintPermission::Low,
+            _ => PrintPermission::Full,
+        };
 
-        // Build qpdf command
-        let mut cmd = Command::new("qpdf");
-
-        // Add source password if provided
-        if let Some(pwd) = source_password {
-            cmd.arg(format!("--password={}", pwd));
-        }
-
-        cmd.arg(input_file.path());
-
-        // Encryption settings: --encrypt user-pass owner-pass 256 --
         let owner_pwd = owner_password.unwrap_or(user_password);
-        cmd.arg("--encrypt");
-        cmd.arg(user_password);
-        cmd.arg(owner_pwd);
-        cmd.arg("256"); // 256-bit AES encryption
 
-        // Print permission
-        match allow_print {
-            "none" => {
-                cmd.arg("--print=none");
-            }
-            "low" => {
-                cmd.arg("--print=low");
-            }
-            _ => {
-                cmd.arg("--print=full");
-            }
-        }
+        let encryption = EncryptionParams::R6(EncryptionParamsR6 {
+            user_password: user_password.to_string(),
+            owner_password: owner_pwd.to_string(),
+            allow_accessibility: true,
+            allow_extract: allow_copy,
+            allow_assemble: allow_modify,
+            allow_annotate_and_form: allow_modify,
+            allow_form_filling: allow_modify,
+            allow_modify_other: allow_modify,
+            allow_print: print_perm,
+            encrypt_metadata: true,
+        });
 
-        // Copy permission
-        if !allow_copy {
-            cmd.arg("--extract=n");
-        }
-
-        // Modify permission
-        if !allow_modify {
-            cmd.arg("--modify=none");
-        }
-
-        cmd.arg("--"); // End of encryption options
-        cmd.arg(output_file.path());
-
-        // Execute qpdf
-        let output = cmd.output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("invalid password") || stderr.contains("password") {
-                return Err(Error::IncorrectPassword);
-            }
-            return Err(Error::QpdfError {
-                reason: stderr.to_string(),
-            });
-        }
-
-        // Read output file
-        let result = std::fs::read(output_file.path())?;
-
-        Ok(result)
+        let mut writer = qpdf.writer();
+        writer
+            .preserve_encryption(false)
+            .encryption_params(encryption);
+        writer.write_to_memory().map_err(map_qpdf_error)
     }
 
     /// Decrypt a PDF (remove password protection)
@@ -249,37 +256,12 @@ impl QpdfWrapper {
     /// # Returns
     /// The decrypted PDF as bytes
     pub fn decrypt(input_data: &[u8], password: &str) -> Result<Vec<u8>> {
-        // Create temporary files for input and output
-        let input_file = NamedTempFile::new()?;
-        let output_file = NamedTempFile::new()?;
+        let qpdf =
+            QPdf::read_from_memory_encrypted(input_data, password).map_err(map_qpdf_error)?;
 
-        // Write input data to temporary file
-        std::fs::write(input_file.path(), input_data)?;
-
-        // Build qpdf command: qpdf --password=secret --decrypt input.pdf output.pdf
-        let mut cmd = Command::new("qpdf");
-        cmd.arg(format!("--password={}", password));
-        cmd.arg("--decrypt");
-        cmd.arg(input_file.path());
-        cmd.arg(output_file.path());
-
-        // Execute qpdf
-        let output = cmd.output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("invalid password") || stderr.contains("password") {
-                return Err(Error::IncorrectPassword);
-            }
-            return Err(Error::QpdfError {
-                reason: stderr.to_string(),
-            });
-        }
-
-        // Read output file
-        let result = std::fs::read(output_file.path())?;
-
-        Ok(result)
+        let mut writer = qpdf.writer();
+        writer.preserve_encryption(false);
+        writer.write_to_memory().map_err(map_qpdf_error)
     }
 
     /// Compress a PDF by optimizing streams and removing redundancy
@@ -288,7 +270,7 @@ impl QpdfWrapper {
     /// * `input_data` - Raw PDF bytes
     /// * `password` - Optional password for encrypted PDFs
     /// * `object_streams` - Use object streams for smaller files (default: generate)
-    /// * `compression_level` - Stream compression level (1-9, default: 9)
+    /// * `_compression_level` - Ignored (kept for API compat; FFI uses built-in compression)
     ///
     /// # Returns
     /// The compressed PDF as bytes
@@ -296,86 +278,27 @@ impl QpdfWrapper {
         input_data: &[u8],
         password: Option<&str>,
         object_streams: Option<&str>,
-        compression_level: Option<u8>,
+        _compression_level: Option<u8>,
     ) -> Result<Vec<u8>> {
-        // Create temporary files for input and output
-        let input_file = NamedTempFile::new()?;
-        let output_file = NamedTempFile::new()?;
+        let qpdf = open_qpdf(input_data, password)?;
 
-        // Write input data to temporary file
-        std::fs::write(input_file.path(), input_data)?;
+        let os_mode = match object_streams.unwrap_or("generate") {
+            "preserve" => ObjectStreamMode::Preserve,
+            "disable" => ObjectStreamMode::Disable,
+            _ => ObjectStreamMode::Generate,
+        };
 
-        // Build qpdf command
-        let mut cmd = Command::new("qpdf");
-
-        // Add password if provided
-        if let Some(pwd) = password {
-            cmd.arg(format!("--password={}", pwd));
-        }
-
-        cmd.arg(input_file.path());
-
-        // Object streams optimization
-        match object_streams.unwrap_or("generate") {
-            "generate" => {
-                cmd.arg("--object-streams=generate");
-            }
-            "preserve" => {
-                cmd.arg("--object-streams=preserve");
-            }
-            "disable" => {
-                cmd.arg("--object-streams=disable");
-            }
-            _ => {
-                cmd.arg("--object-streams=generate");
-            }
-        }
-
-        // Stream data compression
-        cmd.arg("--recompress-flate");
-
-        // Compression level (1-9)
-        let level = compression_level.unwrap_or(9).clamp(1, 9);
-        cmd.arg(format!("--compression-level={}", level));
-
-        // Stream optimization
-        cmd.arg("--optimize-images");
-
-        // Remove unreferenced objects
-        cmd.arg("--remove-unreferenced-resources=yes");
-
-        // Normalize content streams
-        cmd.arg("--normalize-content=y");
-
-        // Decrypt output if input was encrypted
-        cmd.arg("--decrypt");
-
-        cmd.arg(output_file.path());
-
-        // Execute qpdf
-        let output = cmd.output()?;
-
-        // Check for success or warning
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !output.status.success() {
-            if stderr.contains("invalid password") || stderr.contains("password") {
-                return Err(Error::IncorrectPassword);
-            }
-            // qpdf may succeed with warnings
-            if !stderr.contains("operation succeeded") {
-                return Err(Error::QpdfError {
-                    reason: stderr.to_string(),
-                });
-            }
-        }
-
-        // Read output file
-        let result = std::fs::read(output_file.path())?;
-
-        Ok(result)
+        let mut writer = qpdf.writer();
+        writer
+            .object_stream_mode(os_mode)
+            .compress_streams(true)
+            .normalize_content(true)
+            .preserve_unreferenced_objects(false)
+            .preserve_encryption(false);
+        writer.write_to_memory().map_err(map_qpdf_error)
     }
 
-    /// Get the page count of a PDF using qpdf
+    /// Get the page count of a PDF
     ///
     /// # Arguments
     /// * `input_data` - Raw PDF bytes
@@ -384,45 +307,8 @@ impl QpdfWrapper {
     /// # Returns
     /// The number of pages in the PDF
     pub fn get_page_count(input_data: &[u8], password: Option<&str>) -> Result<u32> {
-        // Create temporary file for input
-        let input_file = NamedTempFile::new()?;
-        std::fs::write(input_file.path(), input_data)?;
-
-        // Build qpdf command
-        let mut cmd = Command::new("qpdf");
-
-        // Add password if provided
-        if let Some(pwd) = password {
-            cmd.arg(format!("--password={}", pwd));
-        }
-
-        cmd.arg("--show-npages");
-        cmd.arg(input_file.path());
-
-        // Execute qpdf
-        let output = cmd.output()?;
-
-        // Check for success or warning
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !output.status.success() {
-            if stderr.contains("invalid password") || stderr.contains("password") {
-                return Err(Error::IncorrectPassword);
-            }
-            // qpdf may succeed with warnings
-            if !stderr.contains("operation succeeded") {
-                return Err(Error::QpdfError {
-                    reason: stderr.to_string(),
-                });
-            }
-        }
-
-        // Parse page count from stdout
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let page_count: u32 = stdout.trim().parse().map_err(|_| Error::QpdfError {
-            reason: format!("Failed to parse page count: {}", stdout),
-        })?;
-
-        Ok(page_count)
+        let qpdf = open_qpdf(input_data, password)?;
+        qpdf.get_num_pages().map_err(map_qpdf_error)
     }
 }
 
@@ -431,11 +317,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_qpdf_available() {
-        // This test requires qpdf to be installed
-        let result = QpdfWrapper::check_available();
-        // In CI/Docker environment, qpdf should be available
-        // If running locally without qpdf, this test will fail
-        assert!(result.is_ok(), "qpdf should be available");
+    fn test_parse_single_page() {
+        let result = parse_qpdf_page_range("3", 10).unwrap();
+        assert_eq!(result, vec![2]); // 0-indexed
+    }
+
+    #[test]
+    fn test_parse_range() {
+        let result = parse_qpdf_page_range("1-3", 10).unwrap();
+        assert_eq!(result, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_parse_z_reference() {
+        let result = parse_qpdf_page_range("z", 5).unwrap();
+        assert_eq!(result, vec![4]); // last page, 0-indexed
+    }
+
+    #[test]
+    fn test_parse_r_reference() {
+        let result = parse_qpdf_page_range("r1", 5).unwrap();
+        assert_eq!(result, vec![4]); // last page
+        let result = parse_qpdf_page_range("r2", 5).unwrap();
+        assert_eq!(result, vec![3]); // second to last
+    }
+
+    #[test]
+    fn test_parse_reverse_range() {
+        let result = parse_qpdf_page_range("3-1", 5).unwrap();
+        assert_eq!(result, vec![2, 1, 0]); // 0-indexed, reversed
+    }
+
+    #[test]
+    fn test_parse_z_range() {
+        let result = parse_qpdf_page_range("z-1", 3).unwrap();
+        assert_eq!(result, vec![2, 1, 0]); // all reversed
+    }
+
+    #[test]
+    fn test_parse_odd_pages() {
+        let result = parse_qpdf_page_range("1-6:odd", 10).unwrap();
+        assert_eq!(result, vec![0, 2, 4]); // pages 1,3,5 -> 0-indexed
+    }
+
+    #[test]
+    fn test_parse_even_pages() {
+        let result = parse_qpdf_page_range("1-6:even", 10).unwrap();
+        assert_eq!(result, vec![1, 3, 5]); // pages 2,4,6 -> 0-indexed
+    }
+
+    #[test]
+    fn test_parse_comma_separated() {
+        let result = parse_qpdf_page_range("1,3,5", 10).unwrap();
+        assert_eq!(result, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn test_parse_combined() {
+        let result = parse_qpdf_page_range("1-3,5", 10).unwrap();
+        assert_eq!(result, vec![0, 1, 2, 4]);
+    }
+
+    #[test]
+    fn test_parse_invalid_page() {
+        assert!(parse_qpdf_page_range("0", 5).is_err()); // 0 is invalid
+        assert!(parse_qpdf_page_range("11", 10).is_err()); // out of range
+        assert!(parse_qpdf_page_range("abc", 10).is_err()); // not a number
+    }
+
+    #[test]
+    fn test_parse_empty() {
+        assert!(parse_qpdf_page_range("", 10).is_err());
     }
 }

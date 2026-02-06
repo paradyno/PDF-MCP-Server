@@ -24,7 +24,7 @@ src/
 │   ├── reader.rs     # PDFium-based PDF reading (text, metadata, outline)
 │   ├── annotations.rs # Annotation extraction
 │   ├── images.rs     # Image extraction
-│   └── qpdf.rs       # qpdf CLI wrapper (split, merge, encrypt, decrypt)
+│   └── qpdf.rs       # qpdf FFI wrapper via vendored qpdf crate (split, merge, encrypt, decrypt)
 └── source/
     ├── mod.rs        # Source module exports
     ├── resolver.rs   # PdfSource resolution (path, base64, url, cache)
@@ -33,11 +33,35 @@ src/
 
 ## Key Technologies
 
-- **rmcp**: Rust MCP framework for tool definitions
-- **pdfium-render**: PDFium bindings for PDF reading
-- **qpdf**: External CLI tool for PDF manipulation (must be installed)
+- **rmcp**: Rust MCP framework for tool definitions and MCP Resources
+- **pdfium-render**: PDFium bindings for PDF reading (dynamic linking)
+- **qpdf** (crate): Vendored FFI bindings for PDF manipulation (no runtime dependency)
 - **tokio**: Async runtime
 - **serde/schemars**: JSON serialization and schema generation
+
+## MCP Resources
+
+The server supports MCP Resources to expose PDFs from configured directories.
+
+### Configuration
+
+```bash
+# Command line
+pdf-mcp-server --resource-dir /documents --resource-dir /data/pdfs
+
+# Environment variable (colon-separated)
+PDF_RESOURCE_DIRS=/documents:/data/pdfs pdf-mcp-server
+```
+
+### Implementation
+
+Resources are implemented via `ServerHandler` trait methods in `src/server.rs`:
+- `list_resources`: Lists all PDFs in configured `resource_dirs`
+- `read_resource`: Extracts text content from a PDF by `file://` URI
+
+Resource directories are stored in `PdfServer::resource_dirs` and configured via:
+- `PdfServer::with_resource_dirs(dirs)` - programmatic
+- `run_server_with_dirs(dirs)` - server startup function
 
 ## Development Commands
 
@@ -135,49 +159,45 @@ async fn process_my_tool(
 
 ### 4. Add tests in `tests/integration_test.rs`
 
-## Working with qpdf
+## Working with qpdf (FFI)
 
-### Important: Warning Handling
+The project uses the `qpdf` Rust crate with `vendored` feature, which statically links the qpdf C++ library. No external `qpdf` binary is required at runtime.
 
-qpdf may exit with non-zero status code for warnings (e.g., "operation succeeded with warnings"). Always check stderr for success message:
+### Key APIs
+
+All operations go through `QpdfWrapper` in `src/pdf/qpdf.rs`:
 
 ```rust
-let output = cmd.output()?;
-let stderr = String::from_utf8_lossy(&output.stderr);
+// Read PDF from memory
+let qpdf = QPdf::read_from_memory(data)?;
+let qpdf = QPdf::read_from_memory_encrypted(data, "password")?;
 
-if !output.status.success() {
-    // Check if it was actually a success with warnings
-    if !stderr.contains("operation succeeded") {
-        return Err(Error::QpdfError { reason: stderr.to_string() });
-    }
-}
+// Create empty PDF (for merge/split targets)
+let dest = QPdf::empty();
+
+// Copy pages between documents
+let page = source.get_page(0).unwrap();
+let copied = dest.copy_from_foreign(&page);
+dest.add_page(&copied, false)?;
+
+// Write to memory
+let bytes = qpdf.writer().write_to_memory()?;
+
+// Encryption (AES-256)
+let mut writer = qpdf.writer();
+writer.encryption_params(EncryptionParams::R6(EncryptionParamsR6 { ... }));
+
+// Decryption
+writer.preserve_encryption(false);
 ```
 
-### Common qpdf Commands
+### Error Handling
 
-```bash
-# Split pages
-qpdf input.pdf --pages . 1-5,10 -- output.pdf
+The qpdf crate returns `qpdf::QPdfError` with an `error_code()` method. The `map_qpdf_error()` function maps these to our `Error` enum, specifically converting `QPdfErrorCode::InvalidPassword` to `Error::IncorrectPassword`.
 
-# Merge PDFs
-qpdf --empty --pages file1.pdf 1-z file2.pdf 1-z -- output.pdf
+### Page Range Parser
 
-# Encrypt (256-bit AES)
-qpdf input.pdf --encrypt user-pass owner-pass 256 -- output.pdf
-
-# Decrypt
-qpdf --password=secret --decrypt input.pdf output.pdf
-
-# Get page count
-qpdf --show-npages input.pdf
-
-# Compress/Optimize
-qpdf input.pdf --object-streams=generate --recompress-flate \
-  --compression-level=9 --optimize-images \
-  --remove-unreferenced-resources=yes --normalize-content=y output.pdf
-```
-
-### Page Range Syntax
+`parse_qpdf_page_range()` in `src/pdf/qpdf.rs` handles the page range syntax:
 
 - `1-5`: Pages 1-5
 - `1,3,5`: Specific pages
@@ -277,12 +297,46 @@ struct Params {
 
 ## Gotchas
 
-1. **qpdf warnings**: Always handle "operation succeeded with warnings" case
-2. **Temp files**: Use `tempfile::NamedTempFile` for qpdf I/O
-3. **Password errors**: Check stderr for "invalid password" patterns
-4. **Page counts**: Use `QpdfWrapper::get_page_count()` for encrypted PDFs after operations
-5. **Clippy**: Run before committing - the project uses strict linting
-6. **Format**: Always run `cargo fmt` before committing
+1. **qpdf FFI is sync**: All qpdf operations block. This matches the existing usage pattern in async handlers.
+2. **Page indices**: qpdf crate uses 0-indexed pages, but our API uses 1-indexed. `parse_qpdf_page_range()` handles the conversion.
+3. **Password errors**: qpdf crate returns `QPdfErrorCode::InvalidPassword` — mapped to `Error::IncorrectPassword` via `map_qpdf_error()`.
+4. **Page counts**: Use `QpdfWrapper::get_page_count()` for encrypted PDFs after operations.
+5. **Clippy**: Run before committing - the project uses strict linting.
+6. **Format**: Always run `cargo fmt` before committing.
+
+## Test Coverage Improvements Needed
+
+Current coverage: ~70% line coverage. Priority areas for improvement:
+
+### High Priority (0% coverage)
+- **main.rs** - CLI argument parsing (`--resource-dir`, `--help`, `--version`)
+  - Test `parse_args()` with various argument combinations
+  - Test `parse_env_dirs()` with `PDF_RESOURCE_DIRS` environment variable
+  - Test duplicate removal logic
+
+### Medium Priority (~70% coverage)
+- **server.rs** - MCP Resources methods
+  - `list_resources` - Test with configured directories, empty directories
+  - `read_resource` - Test with valid/invalid URIs, security boundary checks
+  - Error handling paths for various tools
+
+- **source/resolver.rs** (~65%)
+  - URL resolution (`resolve_url`)
+  - Error cases for each source type
+
+- **pdf/reader.rs** (~69%)
+  - Edge cases in text extraction
+  - Various PDF structures (multi-column, watermarks, etc.)
+
+### Running Coverage
+
+```bash
+# Generate coverage report
+docker compose --profile dev run --rm coverage
+
+# View report
+open coverage/html/index.html
+```
 
 ## Future Improvements (Phase 3+)
 

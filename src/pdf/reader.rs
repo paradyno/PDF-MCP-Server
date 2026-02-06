@@ -3,7 +3,78 @@
 use crate::error::{Error, Result};
 use base64::Engine;
 use pdfium_render::prelude::*;
+use std::collections::HashMap;
 use std::path::Path;
+
+// ============================================================================
+// LLM-Optimized Text Extraction Types
+// ============================================================================
+
+/// Character information for advanced text extraction
+#[derive(Debug, Clone)]
+pub struct CharInfo {
+    /// The character
+    pub char: char,
+    /// X coordinate (left)
+    pub x: f32,
+    /// Y coordinate (top)
+    pub y: f32,
+    /// Character width
+    pub width: f32,
+    /// Character height (used for font size estimation)
+    pub height: f32,
+}
+
+/// Line information after grouping characters
+#[derive(Debug, Clone)]
+pub struct LineInfo {
+    /// Characters in this line with their X positions
+    pub chars: Vec<(char, f32)>,
+    /// Y coordinate of the line (top)
+    pub y: f32,
+    /// Average character height (font size proxy)
+    pub avg_height: f32,
+    /// Minimum X coordinate (leftmost character)
+    pub min_x: f32,
+    /// Maximum X coordinate (rightmost character)
+    pub max_x: f32,
+}
+
+/// Configuration for text extraction (LLM-optimized by default)
+#[derive(Debug, Clone)]
+pub struct TextExtractionConfig {
+    /// Paragraph mode: "none" or "spacing"
+    pub paragraph_mode: String,
+    /// Line spacing multiplier for paragraph detection
+    pub paragraph_threshold: f32,
+    /// Column mode: "none" or "auto"
+    pub column_mode: String,
+    /// Minimum gap for column detection
+    pub column_gap: f32,
+    /// Watermark mode: "none" or "center"
+    pub watermark_mode: String,
+    /// Use dynamic thresholds based on font size
+    pub dynamic_thresholds: bool,
+    /// Page dimensions (set per-page during extraction)
+    pub page_width: f32,
+    pub page_height: f32,
+}
+
+impl Default for TextExtractionConfig {
+    /// Create a default config with LLM-optimized settings
+    fn default() -> Self {
+        Self {
+            paragraph_mode: "spacing".to_string(),
+            paragraph_threshold: 1.5,
+            column_mode: "auto".to_string(),
+            column_gap: 30.0,
+            watermark_mode: "center".to_string(),
+            dynamic_thresholds: true,
+            page_width: 0.0,
+            page_height: 0.0,
+        }
+    }
+}
 
 /// Get PDFium instance (creates new instance each time - PDFium is not thread-safe)
 fn create_pdfium() -> Result<Pdfium> {
@@ -372,6 +443,327 @@ impl PdfReader {
         Ok(result.trim_end().to_string())
     }
 
+    /// Extract text from a page with LLM-optimized options
+    pub fn extract_page_text_with_options(
+        page: &PdfPage,
+        config: &TextExtractionConfig,
+    ) -> Result<String> {
+        let text_obj = match page.text() {
+            Ok(t) => t,
+            Err(_) => return Ok(String::new()),
+        };
+
+        // Step 1: Collect all characters with full info (position, size)
+        let chars = Self::collect_chars_with_info(&text_obj);
+        if chars.is_empty() {
+            return Ok(String::new());
+        }
+
+        // Step 2: Calculate thresholds (dynamic or fixed)
+        let (y_tolerance, space_threshold) = if config.dynamic_thresholds {
+            Self::calculate_dynamic_thresholds(&chars)
+        } else {
+            (5.0, 10.0) // Legacy fixed values
+        };
+
+        // Step 3: Group characters into lines
+        let mut lines = Self::group_into_lines(chars, y_tolerance);
+
+        // Step 4: Filter watermarks if enabled
+        if config.watermark_mode == "center" {
+            lines = Self::filter_watermarks(lines, config);
+        }
+
+        // Step 5: Handle column detection
+        let lines = if config.column_mode == "auto" {
+            Self::reorder_columns(lines, config.column_gap)
+        } else {
+            lines
+        };
+
+        // Step 6: Build text output with paragraph detection
+        let result = Self::build_text_output(&lines, space_threshold, config);
+
+        Ok(result)
+    }
+
+    /// Collect character information from page text
+    fn collect_chars_with_info(text_obj: &PdfPageText) -> Vec<CharInfo> {
+        let mut chars = Vec::new();
+
+        for segment in text_obj.segments().iter() {
+            if let Ok(char_iter) = segment.chars() {
+                for char_result in char_iter.iter() {
+                    if let Some(c) = char_result.unicode_char() {
+                        if let Ok(bounds) = char_result.loose_bounds() {
+                            let x = bounds.left().value;
+                            let y = bounds.top().value;
+                            let width = bounds.width().value;
+                            let height = bounds.height().value;
+
+                            chars.push(CharInfo {
+                                char: c,
+                                x,
+                                y,
+                                width,
+                                height,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        chars
+    }
+
+    /// Calculate dynamic thresholds based on font size distribution
+    fn calculate_dynamic_thresholds(chars: &[CharInfo]) -> (f32, f32) {
+        if chars.is_empty() {
+            return (5.0, 10.0); // Fallback to defaults
+        }
+
+        // Calculate median height as the representative font size
+        let mut heights: Vec<f32> = chars
+            .iter()
+            .filter(|c| c.height > 0.0)
+            .map(|c| c.height)
+            .collect();
+
+        if heights.is_empty() {
+            return (5.0, 10.0);
+        }
+
+        heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median_height = heights[heights.len() / 2];
+
+        // Y tolerance: approximately 40% of median font height
+        // This accounts for baseline variations within the same line
+        let y_tolerance = median_height * 0.4;
+
+        // Space threshold: approximately 30% of median font height
+        // Characters with larger gaps are separated by spaces
+        let space_threshold = median_height * 0.3;
+
+        (y_tolerance.max(2.0), space_threshold.max(3.0))
+    }
+
+    /// Group characters into lines based on Y-coordinate proximity
+    fn group_into_lines(chars: Vec<CharInfo>, y_tolerance: f32) -> Vec<LineInfo> {
+        if chars.is_empty() {
+            return Vec::new();
+        }
+
+        // Sort by Y descending (top to bottom), then X ascending
+        let mut sorted_chars = chars;
+        sorted_chars.sort_by(|a, b| {
+            let y_cmp = b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal);
+            if y_cmp == std::cmp::Ordering::Equal {
+                a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                y_cmp
+            }
+        });
+
+        let mut lines: Vec<LineInfo> = Vec::new();
+        let mut current_chars: Vec<CharInfo> = Vec::new();
+        let mut current_y: Option<f32> = None;
+
+        for char_info in sorted_chars {
+            match current_y {
+                Some(cur_y) if (cur_y - char_info.y).abs() <= y_tolerance => {
+                    current_chars.push(char_info);
+                }
+                _ => {
+                    if !current_chars.is_empty() {
+                        lines.push(Self::create_line_info(current_chars));
+                    }
+                    current_y = Some(char_info.y);
+                    current_chars = vec![char_info];
+                }
+            }
+        }
+
+        if !current_chars.is_empty() {
+            lines.push(Self::create_line_info(current_chars));
+        }
+
+        lines
+    }
+
+    /// Create LineInfo from a collection of characters
+    fn create_line_info(chars: Vec<CharInfo>) -> LineInfo {
+        let avg_height = if chars.is_empty() {
+            0.0
+        } else {
+            chars.iter().map(|c| c.height).sum::<f32>() / chars.len() as f32
+        };
+
+        let min_x = chars.iter().map(|c| c.x).fold(f32::MAX, f32::min);
+        let max_x = chars.iter().map(|c| c.x + c.width).fold(f32::MIN, f32::max);
+        let y = chars.first().map(|c| c.y).unwrap_or(0.0);
+
+        LineInfo {
+            chars: chars.into_iter().map(|c| (c.char, c.x)).collect(),
+            y,
+            avg_height,
+            min_x,
+            max_x,
+        }
+    }
+
+    /// Filter out watermarks (centered large text)
+    fn filter_watermarks(lines: Vec<LineInfo>, config: &TextExtractionConfig) -> Vec<LineInfo> {
+        if config.page_width <= 0.0 {
+            return lines;
+        }
+
+        // Calculate average font height across all lines
+        let avg_font_height: f32 = if lines.is_empty() {
+            12.0
+        } else {
+            lines.iter().map(|l| l.avg_height).sum::<f32>() / lines.len() as f32
+        };
+
+        let page_center = config.page_width / 2.0;
+        let center_tolerance = config.page_width * 0.2; // 20% tolerance for centering
+
+        lines
+            .into_iter()
+            .filter(|line| {
+                // Check if line is approximately centered
+                let line_center = (line.min_x + line.max_x) / 2.0;
+                let is_centered = (line_center - page_center).abs() < center_tolerance;
+
+                // Check if text is significantly larger than average (1.5x or more)
+                let is_large = line.avg_height > avg_font_height * 1.5;
+
+                // Check if it's a short line (watermarks are usually short)
+                let is_short = line.chars.len() < 30;
+
+                // Filter out if it looks like a watermark
+                !(is_centered && is_large && is_short)
+            })
+            .collect()
+    }
+
+    /// Detect and reorder columns
+    fn reorder_columns(lines: Vec<LineInfo>, column_gap: f32) -> Vec<LineInfo> {
+        if lines.is_empty() {
+            return lines;
+        }
+
+        // Detect potential column boundaries by analyzing X-coordinate gaps
+        let mut all_x_positions: Vec<f32> = lines
+            .iter()
+            .flat_map(|line| line.chars.iter().map(|(_, x)| *x))
+            .collect();
+        all_x_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Find significant gaps that could indicate column separators
+        let mut gaps: Vec<(f32, f32)> = Vec::new(); // (gap_start, gap_end)
+        for window in all_x_positions.windows(2) {
+            let gap = window[1] - window[0];
+            if gap >= column_gap {
+                gaps.push((window[0], window[1]));
+            }
+        }
+
+        // If no significant gaps found, return as-is
+        if gaps.is_empty() {
+            return lines;
+        }
+
+        // Find the most prominent column separator (largest gap that appears consistently)
+        // Group gaps by position and find the one that appears most frequently
+        let mut gap_histogram: HashMap<i32, (f32, usize)> = HashMap::new();
+        for (start, end) in &gaps {
+            let mid = ((start + end) / 2.0) as i32;
+            // Round to nearest 10 points for grouping
+            let bucket = (mid / 10) * 10;
+            let entry = gap_histogram.entry(bucket).or_insert((0.0, 0));
+            entry.0 += end - start;
+            entry.1 += 1;
+        }
+
+        // Find the bucket with the most occurrences
+        let best_separator = gap_histogram
+            .iter()
+            .max_by_key(|(_, (_, count))| *count)
+            .map(|(bucket, _)| *bucket as f32);
+
+        let separator = match best_separator {
+            Some(s) => s,
+            None => return lines,
+        };
+
+        // Split lines into columns
+        let mut left_column: Vec<LineInfo> = Vec::new();
+        let mut right_column: Vec<LineInfo> = Vec::new();
+
+        for line in lines {
+            let line_center = (line.min_x + line.max_x) / 2.0;
+            if line_center < separator {
+                left_column.push(line);
+            } else {
+                right_column.push(line);
+            }
+        }
+
+        // Merge: left column first, then right column
+        let mut result = left_column;
+        result.extend(right_column);
+        result
+    }
+
+    /// Build the final text output with optional paragraph detection
+    fn build_text_output(
+        lines: &[LineInfo],
+        space_threshold: f32,
+        config: &TextExtractionConfig,
+    ) -> String {
+        let mut result = String::new();
+        let mut prev_y: Option<f32> = None;
+        let mut prev_avg_height: Option<f32> = None;
+
+        for line in lines {
+            // Sort characters by X position
+            let mut sorted_chars: Vec<(char, f32)> = line.chars.clone();
+            sorted_chars.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Paragraph detection
+            if config.paragraph_mode == "spacing" {
+                if let (Some(py), Some(ph)) = (prev_y, prev_avg_height) {
+                    let line_gap = py - line.y;
+                    let normal_gap = ph.max(line.avg_height);
+
+                    // If gap is significantly larger than normal line height, add paragraph break
+                    if line_gap > normal_gap * config.paragraph_threshold {
+                        result.push('\n');
+                    }
+                }
+            }
+
+            // Build line text
+            let mut prev_x: Option<f32> = None;
+            for (c, x) in sorted_chars {
+                if let Some(px) = prev_x {
+                    if x - px > space_threshold && c != ' ' {
+                        result.push(' ');
+                    }
+                }
+                result.push(c);
+                prev_x = Some(x);
+            }
+
+            result.push('\n');
+            prev_y = Some(line.y);
+            prev_avg_height = Some(line.avg_height);
+        }
+
+        result.trim_end().to_string()
+    }
+
     /// Map PDFium errors to our error type
     fn map_pdfium_error(err: PdfiumError) -> Error {
         match err {
@@ -455,6 +847,68 @@ impl PdfReader {
         }
         matches
     }
+}
+
+/// Extract text from PDF bytes with LLM-optimized options
+/// Returns Vec of (page_number, text) tuples for specified pages
+pub fn extract_text_with_options(
+    data: &[u8],
+    password: Option<&str>,
+    page_numbers: Option<&[u32]>,
+    config: &TextExtractionConfig,
+) -> Result<Vec<(u32, String)>> {
+    if data.len() < 4 || &data[0..4] != b"%PDF" {
+        return Err(Error::InvalidPdf {
+            reason: "Not a valid PDF file".to_string(),
+        });
+    }
+
+    let pdfium = create_pdfium()?;
+
+    let document = match password {
+        Some(pwd) => pdfium.load_pdf_from_byte_slice(data, Some(pwd)),
+        None => pdfium.load_pdf_from_byte_slice(data, None),
+    }
+    .map_err(|e| match e {
+        PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::PasswordError) => {
+            Error::PasswordRequired
+        }
+        _ => Error::Pdfium {
+            reason: format!("{}", e),
+        },
+    })?;
+
+    let pages = document.pages();
+    let page_count = pages.len() as u32;
+
+    // Determine which pages to process
+    let pages_to_process: Vec<u32> = match page_numbers {
+        Some(nums) => nums
+            .iter()
+            .filter(|&&n| n >= 1 && n <= page_count)
+            .copied()
+            .collect(),
+        None => (1..=page_count).collect(),
+    };
+
+    let mut results = Vec::with_capacity(pages_to_process.len());
+
+    for page_num in pages_to_process {
+        let page_index = page_num - 1;
+        let page = pages.get(page_index as u16).map_err(|e| Error::Pdfium {
+            reason: format!("Failed to get page {}: {}", page_num, e),
+        })?;
+
+        // Create config with page dimensions
+        let mut page_config = config.clone();
+        page_config.page_width = page.width().value;
+        page_config.page_height = page.height().value;
+
+        let text = PdfReader::extract_page_text_with_options(&page, &page_config)?;
+        results.push((page_num, text));
+    }
+
+    Ok(results)
 }
 
 /// Extract images from PDF bytes

@@ -537,13 +537,6 @@ fn test_extract_annotations_structure() {
 
 use pdf_mcp_server::pdf::QpdfWrapper;
 
-/// Test that qpdf is available
-#[test]
-fn test_qpdf_available() {
-    let result = QpdfWrapper::check_available();
-    assert!(result.is_ok(), "qpdf should be available");
-}
-
 /// Test splitting pages from a PDF
 #[test]
 fn test_split_pdf_basic() {
@@ -1400,4 +1393,270 @@ fn test_compress_pdf_password_required() {
         result.is_err(),
         "compress should fail without password for protected PDF"
     );
+}
+
+// ============================================================================
+// LLM-Optimized Text Extraction Tests
+// ============================================================================
+
+use pdf_mcp_server::pdf::{extract_text_with_options, TextExtractionConfig};
+
+/// Test basic text extraction with LLM-optimized defaults
+#[test]
+fn test_extract_text_with_options_basic() {
+    let path = fixture_path("dummy.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let config = TextExtractionConfig::default();
+
+    let result = extract_text_with_options(&data, None, None, &config);
+    assert!(result.is_ok(), "extract_text_with_options should succeed");
+
+    let pages = result.unwrap();
+    assert!(!pages.is_empty(), "Should extract at least one page");
+}
+
+/// Test extraction with dynamic thresholds (enabled by default)
+#[test]
+fn test_extract_text_with_dynamic_thresholds() {
+    let path = fixture_path("tracemonkey.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let config = TextExtractionConfig::default();
+
+    let result = extract_text_with_options(&data, None, Some(&[1]), &config);
+    assert!(
+        result.is_ok(),
+        "extract_text_with_options with dynamic thresholds should succeed"
+    );
+
+    let pages = result.unwrap();
+    assert_eq!(pages.len(), 1, "Should extract exactly one page");
+    assert!(!pages[0].1.is_empty(), "Extracted text should not be empty");
+}
+
+/// Test extraction with paragraph detection (enabled by default)
+#[test]
+fn test_extract_text_with_paragraph_detection() {
+    let path = fixture_path("tracemonkey.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    // Default config has paragraph_mode: "spacing"
+    let config = TextExtractionConfig::default();
+
+    let result = extract_text_with_options(&data, None, Some(&[1]), &config);
+    assert!(
+        result.is_ok(),
+        "extract_text_with_options with paragraph detection should succeed"
+    );
+
+    let pages = result.unwrap();
+    assert!(!pages[0].1.is_empty(), "Extracted text should not be empty");
+}
+
+/// Test extraction with column detection (tracemonkey.pdf is 2-column, enabled by default)
+#[test]
+fn test_extract_text_with_column_detection() {
+    let path = fixture_path("tracemonkey.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    // Default config has column_mode: "auto"
+    let config = TextExtractionConfig::default();
+
+    let result = extract_text_with_options(&data, None, Some(&[1]), &config);
+    assert!(
+        result.is_ok(),
+        "extract_text_with_options with column detection should succeed"
+    );
+
+    let pages = result.unwrap();
+    assert!(!pages[0].1.is_empty(), "Extracted text should not be empty");
+
+    // The text should be extracted (we can't easily verify order without manual inspection)
+    println!("Column detection extracted {} chars", pages[0].1.len());
+}
+
+/// Test extraction with all LLM options (all enabled by default)
+#[test]
+fn test_extract_text_with_all_options() {
+    let path = fixture_path("tracemonkey.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    // Default config has all LLM optimizations enabled
+    let config = TextExtractionConfig::default();
+
+    let result = extract_text_with_options(&data, None, Some(&[1, 2]), &config);
+    assert!(
+        result.is_ok(),
+        "extract_text_with_options with all options should succeed"
+    );
+
+    let pages = result.unwrap();
+    assert_eq!(pages.len(), 2, "Should extract exactly 2 pages");
+    assert!(!pages[0].1.is_empty(), "Page 1 text should not be empty");
+    assert!(!pages[1].1.is_empty(), "Page 2 text should not be empty");
+}
+
+/// Test extraction with password-protected PDF
+#[test]
+fn test_extract_text_with_options_password_protected() {
+    let path = fixture_path("password-protected.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let config = TextExtractionConfig::default();
+
+    // Should work with correct password
+    let result = extract_text_with_options(&data, Some("testpass"), None, &config);
+    assert!(
+        result.is_ok(),
+        "extract_text_with_options should succeed with correct password"
+    );
+
+    // Should fail without password
+    let result_no_pass = extract_text_with_options(&data, None, None, &config);
+    assert!(
+        result_no_pass.is_err(),
+        "extract_text_with_options should fail without password"
+    );
+}
+
+/// Test extraction with specific page range
+#[test]
+fn test_extract_text_with_options_page_range() {
+    let path = fixture_path("tracemonkey.pdf");
+    let data = std::fs::read(&path).expect("Failed to read PDF file");
+
+    let config = TextExtractionConfig::default();
+
+    // Extract only pages 3-5
+    let result = extract_text_with_options(&data, None, Some(&[3, 4, 5]), &config);
+    assert!(result.is_ok(), "extract_text_with_options should succeed");
+
+    let pages = result.unwrap();
+    assert_eq!(pages.len(), 3, "Should extract exactly 3 pages");
+    assert_eq!(pages[0].0, 3, "First page should be page 3");
+    assert_eq!(pages[1].0, 4, "Second page should be page 4");
+    assert_eq!(pages[2].0, 5, "Third page should be page 5");
+}
+
+/// Test extraction with invalid PDF data
+#[test]
+fn test_extract_text_with_options_invalid_pdf() {
+    let config = TextExtractionConfig::default();
+
+    let result = extract_text_with_options(b"not a valid PDF", None, None, &config);
+    assert!(
+        result.is_err(),
+        "extract_text_with_options should fail for invalid PDF"
+    );
+}
+
+// ============================================================================
+// list_pdfs tests
+// ============================================================================
+
+use pdf_mcp_server::server::{ListPdfsParams, PdfServer};
+
+/// Test listing PDFs in the fixtures directory
+#[test]
+fn test_list_pdfs_basic() {
+    let fixtures_dir = fixture_path("");
+    let params = ListPdfsParams {
+        directory: fixtures_dir.to_string_lossy().to_string(),
+        recursive: false,
+        pattern: None,
+    };
+
+    let result = PdfServer::process_list_pdfs_public(&params);
+    assert!(result.is_ok(), "list_pdfs should succeed");
+
+    let list_result = result.unwrap();
+    assert!(list_result.error.is_none(), "Should not have error");
+    assert!(list_result.total_count > 0, "Should find PDF files");
+
+    // Verify all returned files are PDFs
+    for file in &list_result.files {
+        assert!(
+            file.name.to_lowercase().ends_with(".pdf"),
+            "All files should be PDFs"
+        );
+        assert!(file.size > 0, "File size should be positive");
+    }
+}
+
+/// Test listing PDFs with pattern filter
+#[test]
+fn test_list_pdfs_with_pattern() {
+    let fixtures_dir = fixture_path("");
+    let params = ListPdfsParams {
+        directory: fixtures_dir.to_string_lossy().to_string(),
+        recursive: false,
+        pattern: Some("dummy*".to_string()),
+    };
+
+    let result = PdfServer::process_list_pdfs_public(&params);
+    assert!(result.is_ok(), "list_pdfs with pattern should succeed");
+
+    let list_result = result.unwrap();
+    // All returned files should match the pattern
+    for file in &list_result.files {
+        assert!(
+            file.name.starts_with("dummy"),
+            "All files should match pattern"
+        );
+    }
+}
+
+/// Test listing PDFs in non-existent directory
+#[test]
+fn test_list_pdfs_nonexistent_directory() {
+    let params = ListPdfsParams {
+        directory: "/nonexistent/directory/path".to_string(),
+        recursive: false,
+        pattern: None,
+    };
+
+    let result = PdfServer::process_list_pdfs_public(&params);
+    assert!(
+        result.is_err(),
+        "list_pdfs should fail for non-existent directory"
+    );
+}
+
+/// Test listing PDFs with file path instead of directory
+#[test]
+fn test_list_pdfs_not_a_directory() {
+    let file_path = fixture_path("dummy.pdf");
+    let params = ListPdfsParams {
+        directory: file_path.to_string_lossy().to_string(),
+        recursive: false,
+        pattern: None,
+    };
+
+    let result = PdfServer::process_list_pdfs_public(&params);
+    assert!(result.is_err(), "list_pdfs should fail for file path");
+}
+
+// ============================================================================
+// PdfServer resource directory tests
+// ============================================================================
+
+/// Test PdfServer creation with resource directories
+#[test]
+fn test_pdf_server_with_resource_dirs() {
+    let fixtures_dir = fixture_path("");
+    let server = PdfServer::with_resource_dirs(vec![fixtures_dir.to_string_lossy().to_string()]);
+
+    // Server should be created successfully
+    // The actual resource listing is tested via async methods
+    drop(server);
+}
+
+/// Test PdfServer creation without resource directories
+#[test]
+fn test_pdf_server_without_resource_dirs() {
+    let server = PdfServer::new();
+
+    // Server should be created successfully without resource dirs
+    drop(server);
 }

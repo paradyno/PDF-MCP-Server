@@ -1,8 +1,8 @@
 //! MCP Server implementation using rmcp
 
 use crate::pdf::{
-    extract_annotations, extract_images_from_pages, extract_links, get_page_info, parse_page_range,
-    PdfReader, QpdfWrapper,
+    extract_annotations, extract_images_from_pages, extract_links, extract_text_with_options,
+    get_page_info, parse_page_range, PdfReader, QpdfWrapper, TextExtractionConfig,
 };
 use crate::source::{
     resolve_base64, resolve_cache, resolve_path, resolve_url, CacheManager, ResolvedPdf,
@@ -10,7 +10,8 @@ use crate::source::{
 use anyhow::Result;
 use rmcp::{
     handler::server::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
-    schemars::JsonSchema, tool, tool_handler, tool_router, ServerHandler, ServiceExt,
+    schemars::JsonSchema, service::RequestContext, tool, tool_handler, tool_router, RoleServer,
+    ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -48,6 +49,49 @@ pub enum PdfSource {
 pub struct PdfServer {
     cache: Arc<RwLock<CacheManager>>,
     tool_router: ToolRouter<Self>,
+    /// Directories to expose as PDF resources
+    resource_dirs: Arc<Vec<String>>,
+}
+
+// ============================================================================
+// Request/Response types for list_pdfs
+// ============================================================================
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListPdfsParams {
+    /// Directory to search for PDF files
+    pub directory: String,
+    /// Search subdirectories recursively (default: false)
+    #[serde(default)]
+    pub recursive: bool,
+    /// Filename pattern to filter (e.g., "report*.pdf"). Supports glob patterns.
+    #[serde(default)]
+    pub pattern: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PdfFileInfo {
+    /// Full path to the PDF file
+    pub path: String,
+    /// Filename only
+    pub name: String,
+    /// File size in bytes
+    pub size: u64,
+    /// Last modified time (ISO 8601 format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListPdfsResult {
+    /// Directory that was searched
+    pub directory: String,
+    /// List of PDF files found
+    pub files: Vec<PdfFileInfo>,
+    /// Total number of files found
+    pub total_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ============================================================================
@@ -671,9 +715,15 @@ pub struct CompressPdfResult {
 #[tool_router]
 impl PdfServer {
     pub fn new() -> Self {
+        Self::with_resource_dirs(Vec::new())
+    }
+
+    /// Create a new PdfServer with specified resource directories
+    pub fn with_resource_dirs(dirs: Vec<String>) -> Self {
         Self {
             cache: Arc::new(RwLock::new(CacheManager::new(100))),
             tool_router: Self::tool_router(),
+            resource_dirs: Arc::new(dirs),
         }
     }
 
@@ -1024,6 +1074,30 @@ The output is always cached (output_cache_key) for chaining with other tools."
         let response = serde_json::json!({ "results": [result] });
         serde_json::to_string_pretty(&response).unwrap_or_default()
     }
+
+    /// List PDF files in a directory
+    #[tool(
+        description = "List PDF files in a directory. Useful for discovering PDFs before processing them.
+
+Returns for each file:
+- Full path (can be used directly with other tools)
+- Filename
+- File size in bytes
+- Last modified time
+
+Supports recursive search and glob pattern filtering."
+    )]
+    async fn list_pdfs(&self, Parameters(params): Parameters<ListPdfsParams>) -> String {
+        let result = Self::process_list_pdfs(&params).unwrap_or_else(|e| ListPdfsResult {
+            directory: params.directory.clone(),
+            files: vec![],
+            total_count: 0,
+            error: Some(e.to_string()),
+        });
+
+        let response = serde_json::json!({ "results": [result] });
+        serde_json::to_string_pretty(&response).unwrap_or_default()
+    }
 }
 
 impl PdfServer {
@@ -1092,8 +1166,14 @@ impl PdfServer {
             (1..=reader.page_count()).collect()
         };
 
-        // Extract text
-        let page_texts = reader.extract_pages_text(&pages_to_extract)?;
+        // Extract text with LLM-optimized settings
+        let config = TextExtractionConfig::default();
+        let page_texts = extract_text_with_options(
+            &resolved.data,
+            params.password.as_deref(),
+            Some(&pages_to_extract),
+            &config,
+        )?;
         let pages: Vec<PageContent> = page_texts
             .into_iter()
             .map(|(page, text)| PageContent { page, text })
@@ -1791,6 +1871,115 @@ impl PdfServer {
             error: None,
         })
     }
+
+    /// List PDF files in a directory (public for testing)
+    pub fn process_list_pdfs_public(
+        params: &ListPdfsParams,
+    ) -> crate::error::Result<ListPdfsResult> {
+        Self::process_list_pdfs(params)
+    }
+
+    fn process_list_pdfs(params: &ListPdfsParams) -> crate::error::Result<ListPdfsResult> {
+        let dir_path = Path::new(&params.directory);
+
+        if !dir_path.exists() {
+            return Err(crate::error::Error::PdfNotFound {
+                path: params.directory.clone(),
+            });
+        }
+
+        if !dir_path.is_dir() {
+            return Err(crate::error::Error::InvalidPdf {
+                reason: format!("{} is not a directory", params.directory),
+            });
+        }
+
+        let mut files = Vec::new();
+
+        // Compile glob pattern if provided
+        let pattern = params
+            .pattern
+            .as_ref()
+            .and_then(|p| glob::Pattern::new(p).ok());
+
+        Self::collect_pdfs(dir_path, params.recursive, &pattern, &mut files)?;
+
+        // Sort by path for consistent ordering
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+
+        let total_count = files.len() as u32;
+
+        Ok(ListPdfsResult {
+            directory: params.directory.clone(),
+            files,
+            total_count,
+            error: None,
+        })
+    }
+
+    fn collect_pdfs(
+        dir: &Path,
+        recursive: bool,
+        pattern: &Option<glob::Pattern>,
+        files: &mut Vec<PdfFileInfo>,
+    ) -> crate::error::Result<()> {
+        let entries = std::fs::read_dir(dir).map_err(crate::error::Error::Io)?;
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue, // Skip entries we can't read
+            };
+
+            let path = entry.path();
+
+            if path.is_dir() {
+                if recursive {
+                    // Recursively collect from subdirectory
+                    let _ = Self::collect_pdfs(&path, recursive, pattern, files);
+                }
+            } else if path.is_file() {
+                // Check if it's a PDF file
+                if let Some(ext) = path.extension() {
+                    if ext.eq_ignore_ascii_case("pdf") {
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+
+                        // Apply pattern filter if provided
+                        if let Some(ref pat) = pattern {
+                            if !pat.matches(&name) {
+                                continue;
+                            }
+                        }
+
+                        // Get file metadata
+                        let metadata = std::fs::metadata(&path).ok();
+                        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                        let modified = metadata
+                            .as_ref()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| {
+                                chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                                    .map(|dt| dt.to_rfc3339())
+                                    .unwrap_or_default()
+                            });
+
+                        files.push(PdfFileInfo {
+                            path: path.to_string_lossy().to_string(),
+                            name,
+                            size,
+                            modified,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for PdfServer {
@@ -1804,19 +1993,146 @@ impl ServerHandler for PdfServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "PDF MCP Server provides tools for extracting text, outlines, and searching PDFs."
+                "PDF MCP Server provides tools for extracting text, outlines, and searching PDFs. \
+                 PDF files in configured directories are also exposed as resources."
                     .into(),
             ),
         }
     }
+
+    /// List available PDF resources from configured directories
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        let mut resources = Vec::new();
+
+        for dir in self.resource_dirs.iter() {
+            let params = ListPdfsParams {
+                directory: dir.clone(),
+                recursive: true,
+                pattern: None,
+            };
+
+            if let Ok(list_result) = Self::process_list_pdfs_public(&params) {
+                for file in list_result.files {
+                    let uri = format!("file://{}", file.path);
+                    let mut resource = RawResource::new(uri.clone(), file.name.clone());
+                    resource.mime_type = Some("application/pdf".to_string());
+                    resource.description = Some(format!(
+                        "PDF file ({} bytes){}",
+                        file.size,
+                        file.modified
+                            .as_ref()
+                            .map(|m| format!(", modified: {}", m))
+                            .unwrap_or_default()
+                    ));
+                    resource.size = Some(file.size as u32);
+
+                    resources.push(Annotated {
+                        raw: resource,
+                        annotations: None,
+                    });
+                }
+            }
+        }
+
+        Ok(ListResourcesResult {
+            resources,
+            next_cursor: None,
+            meta: Default::default(),
+        })
+    }
+
+    /// Read a PDF resource and return its text content
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        let uri = &request.uri;
+
+        // Parse file:// URI to get the path
+        let path = if uri.starts_with("file://") {
+            uri.strip_prefix("file://").unwrap_or(uri)
+        } else {
+            return Err(ErrorData::invalid_params(
+                "Only file:// URIs are supported",
+                None,
+            ));
+        };
+
+        // Check if the path is within a configured resource directory
+        let path_obj = std::path::Path::new(path);
+        let is_allowed = self.resource_dirs.iter().any(|dir| {
+            let dir_path = std::path::Path::new(dir);
+            path_obj.starts_with(dir_path)
+        });
+
+        if !is_allowed && !self.resource_dirs.is_empty() {
+            return Err(ErrorData::invalid_params(
+                "Resource not found in configured directories",
+                None,
+            ));
+        }
+
+        // Extract text from the PDF
+        let source = PdfSource::Path {
+            path: path.to_string(),
+        };
+
+        match self
+            .process_extract_text(
+                &source,
+                &ExtractTextParams {
+                    sources: vec![source.clone()],
+                    pages: None,
+                    include_metadata: true,
+                    include_images: false,
+                    password: None,
+                    cache: false,
+                },
+            )
+            .await
+        {
+            Ok(result) => {
+                // Combine all page content
+                let text = result
+                    .pages
+                    .iter()
+                    .map(|p| format!("--- Page {} ---\n{}", p.page, p.text))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+
+                Ok(ReadResourceResult {
+                    contents: vec![ResourceContents::TextResourceContents {
+                        uri: uri.clone(),
+                        mime_type: Some("text/plain".to_string()),
+                        text,
+                        meta: Default::default(),
+                    }],
+                })
+            }
+            Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),
+        }
+    }
 }
 
-/// Run the MCP server
+/// Run the MCP server without resource directories
 pub async fn run_server() -> Result<()> {
-    let server = PdfServer::new();
+    run_server_with_dirs(Vec::new()).await
+}
+
+/// Run the MCP server with specified resource directories
+pub async fn run_server_with_dirs(resource_dirs: Vec<String>) -> Result<()> {
+    let server = PdfServer::with_resource_dirs(resource_dirs);
 
     tracing::info!("PDF MCP Server ready, waiting for connections...");
 
