@@ -1,33 +1,26 @@
-# PDF MCP Server
+# 📄 PDF MCP Server
 
-A high-performance MCP (Model Context Protocol) server for PDF processing, built in Rust.
+A high-performance [MCP](https://modelcontextprotocol.io/) server for PDF processing, built in Rust.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CI](https://github.com/paradyno/pdf-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/paradyno/pdf-mcp-server/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/paradyno/pdf-mcp-server/branch/main/graph/badge.svg)](https://codecov.io/gh/paradyno/pdf-mcp-server)
 
-## Overview
+Give your AI agents powerful PDF capabilities — extract text, search, split, merge, encrypt, and more. All dependencies are Apache 2.0 licensed, keeping your project clean and permissive.
 
-PDF MCP Server provides AI agents with powerful PDF processing capabilities through the Model Context Protocol. It uses **PDFium** for text extraction and **qpdf** (vendored FFI) for PDF manipulation, ensuring a clean Apache 2.0 licensed solution with no external runtime dependencies beyond PDFium.
+## ✨ Features
 
-### Key Features
+| Category | Tools |
+|----------|-------|
+| 📖 **Reading** | `extract_text` · `extract_metadata` · `extract_outline` · `extract_annotations` · `extract_links` |
+| 🔍 **Search & Discovery** | `search` · `list_pdfs` · `get_page_info` |
+| 🖼️ **Media** | Image extraction (via `extract_text`) |
+| ✂️ **Manipulation** | `split_pdf` · `merge_pdfs` · `compress_pdf` |
+| 🔒 **Security** | `protect_pdf` · `unprotect_pdf` · Password-protected PDF support |
+| 📦 **Resources** | Expose PDFs as MCP Resources for direct client access |
+| ⚡ **Performance** | Batch processing · LRU caching · Operation chaining via cache keys |
 
-- **Text Extraction** - Extract text from PDFs with page selection support
-- **Metadata Extraction** - Get document properties (author, title, dates, etc.)
-- **Outline Extraction** - Get PDF bookmarks/table of contents with page ranges
-- **Annotation Extraction** - Extract highlights, comments, and other annotations
-- **Image Extraction** - Extract embedded images from PDFs
-- **Link Extraction** - Extract hyperlinks and internal page navigation
-- **Page Info** - Get page dimensions, word/char counts, token estimates, and file sizes
-- **Search** - Full-text search within PDFs with context
-- **PDF Discovery** - List PDF files in directories with filtering
-- **PDF Manipulation** - Split, merge, compress, protect, and unprotect PDFs
-- **MCP Resources** - Expose PDFs as MCP resources for direct client access
-- **Batch Processing** - Process multiple PDFs in parallel
-- **Caching** - Optional caching for repeated operations and chained operations
-- **Password Support** - Handle password-protected PDFs
-
-## Installation
+## 🚀 Installation
 
 ### npm (Recommended)
 
@@ -37,15 +30,13 @@ npm install -g @paradyno/pdf-mcp-server
 
 ### Pre-built Binaries
 
-Download the latest release for your platform from [GitHub Releases](https://github.com/paradyno/pdf-mcp-server/releases):
+Download from [GitHub Releases](https://github.com/paradyno/pdf-mcp-server/releases):
 
-| Platform | Architecture | Download |
-|----------|--------------|----------|
-| Linux | x86_64 | `pdf-mcp-server-linux-x64` |
-| Linux | ARM64 | `pdf-mcp-server-linux-arm64` |
-| macOS | Intel | `pdf-mcp-server-darwin-x64` |
-| macOS | Apple Silicon | `pdf-mcp-server-darwin-arm64` |
-| Windows | x86_64 | `pdf-mcp-server-windows-x64.exe` |
+| Platform | x86_64 | ARM64 |
+|----------|--------|-------|
+| 🐧 Linux | `pdf-mcp-server-linux-x64` | `pdf-mcp-server-linux-arm64` |
+| 🍎 macOS | `pdf-mcp-server-darwin-x64` | `pdf-mcp-server-darwin-arm64` |
+| 🪟 Windows | `pdf-mcp-server-windows-x64.exe` | — |
 
 ### From Source
 
@@ -53,31 +44,13 @@ Download the latest release for your platform from [GitHub Releases](https://git
 cargo install --git https://github.com/paradyno/pdf-mcp-server
 ```
 
-## Command Line Options
-
-```
-USAGE:
-    pdf-mcp-server [OPTIONS]
-
-OPTIONS:
-    -r, --resource-dir <PATH>    Add a directory to expose as PDF resources
-                                 Can be specified multiple times
-    -h, --help                   Print help information
-    -V, --version                Print version information
-
-ENVIRONMENT VARIABLES:
-    PDF_RESOURCE_DIRS            Colon-separated list of resource directories
-                                 Example: /documents:/data/pdfs
-```
-
-## Configuration
+## ⚙️ Configuration
 
 ### Claude Desktop
 
 Add to your `claude_desktop_config.json`:
-
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -90,27 +63,13 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-Or if using a downloaded binary:
-
-```json
-{
-  "mcpServers": {
-    "pdf": {
-      "command": "/path/to/pdf-mcp-server"
-    }
-  }
-}
-```
-
 ### Claude Code
 
 ```bash
 claude mcp add pdf -- npx @paradyno/pdf-mcp-server
 ```
 
-### VS Code (with MCP extension)
-
-Add to your MCP settings:
+### VS Code
 
 ```json
 {
@@ -123,30 +82,24 @@ Add to your MCP settings:
 }
 ```
 
-## Tools
+## 🛠️ Tools
 
-### `extract_text`
+### Source Types
 
-Extract text content from PDF files with LLM-optimized formatting.
+All tools accept PDF sources in multiple formats:
 
-Text extraction is automatically optimized for LLM consumption:
-- **Paragraph detection** - Detects paragraph breaks by line spacing
-- **Multi-column support** - Automatically detects and reorders multi-column layouts
-- **Watermark removal** - Removes centered watermarks (e.g., "CONFIDENTIAL", "DRAFT")
-- **Dynamic thresholds** - Adjusts spacing detection based on font size
+```json
+{ "path": "/documents/file.pdf" }
+{ "base64": "JVBERi0xLjQK..." }
+{ "url": "https://example.com/document.pdf" }
+{ "cache_key": "abc123" }
+```
 
-**Parameters:**
+---
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `sources` | array | Yes | - | PDF sources (see Source Types below) |
-| `pages` | string | No | all | Page selection (e.g., "1-5,10,15-20") |
-| `include_metadata` | boolean | No | true | Include PDF metadata |
-| `include_images` | boolean | No | false | Include extracted images (base64 PNG) |
-| `password` | string | No | - | PDF password if encrypted |
-| `cache` | boolean | No | false | Enable caching |
+### 📖 `extract_text`
 
-**Example:**
+Extract text content with LLM-optimized formatting (paragraph detection, multi-column reordering, watermark removal).
 
 ```json
 {
@@ -154,26 +107,40 @@ Text extraction is automatically optimized for LLM consumption:
   "pages": "1-10",
   "include_metadata": true
 }
+```
 
-### `extract_outline`
-
-Extract PDF bookmarks/table of contents.
-
-**Parameters:**
+<details>
+<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `sources` | array | Yes | - | PDF sources |
-| `password` | string | No | - | PDF password if encrypted |
+| `sources` | array | Yes | — | PDF sources |
+| `pages` | string | No | all | Page selection (e.g., `"1-5,10,15-20"`) |
+| `include_metadata` | boolean | No | true | Include PDF metadata |
+| `include_images` | boolean | No | false | Include extracted images (base64 PNG) |
+| `password` | string | No | — | PDF password if encrypted |
 | `cache` | boolean | No | false | Enable caching |
 
-**Example:**
+</details>
+
+### 📖 `extract_outline`
+
+Extract PDF bookmarks / table of contents.
 
 ```json
 {
   "sources": [{ "path": "/documents/book.pdf" }]
 }
 ```
+
+<details>
+<summary>Parameters & Response</summary>
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sources` | array | Yes | — | PDF sources |
+| `password` | string | No | — | PDF password if encrypted |
+| `cache` | boolean | No | false | Enable caching |
 
 **Response:**
 
@@ -194,181 +161,73 @@ Extract PDF bookmarks/table of contents.
 }
 ```
 
-### `search`
+</details>
 
-Search for text within PDF files.
+### 📖 `extract_metadata`
 
-**Parameters:**
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `sources` | array | Yes | - | PDF sources |
-| `query` | string | Yes | - | Search query |
-| `case_sensitive` | boolean | No | false | Case-sensitive search |
-| `max_results` | integer | No | 100 | Maximum results to return |
-| `context_chars` | integer | No | 50 | Characters of context around match |
-| `password` | string | No | - | PDF password if encrypted |
-| `cache` | boolean | No | false | Enable caching |
-
-**Example:**
+Extract PDF metadata (author, title, dates, etc.) without loading full content.
 
 ```json
 {
-  "sources": [{ "path": "/documents/manual.pdf" }],
-  "query": "error handling",
-  "context_chars": 100
+  "sources": [{ "path": "/documents/report.pdf" }]
 }
 ```
 
-### `extract_metadata`
-
-Extract PDF metadata without loading full content. Fast operation for getting document information.
-
-**Parameters:**
+<details>
+<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `sources` | array | Yes | - | PDF sources |
-| `password` | string | No | - | PDF password if encrypted |
+| `sources` | array | Yes | — | PDF sources |
+| `password` | string | No | — | PDF password if encrypted |
 | `cache` | boolean | No | false | Enable caching |
 
-### `extract_annotations`
+</details>
 
-Extract annotations (highlights, comments, underlines, etc.) from PDF files.
+### 📖 `extract_annotations`
 
-**Parameters:**
+Extract highlights, comments, underlines, and other annotations.
+
+```json
+{
+  "sources": [{ "path": "/documents/report.pdf" }],
+  "annotation_types": ["highlight", "text"],
+  "pages": "1-5"
+}
+```
+
+<details>
+<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `sources` | array | Yes | - | PDF sources |
+| `sources` | array | Yes | — | PDF sources |
 | `annotation_types` | array | No | all | Filter by types (highlight, underline, text, etc.) |
 | `pages` | string | No | all | Page selection |
-| `password` | string | No | - | PDF password if encrypted |
+| `password` | string | No | — | PDF password if encrypted |
 | `cache` | boolean | No | false | Enable caching |
 
-### `split_pdf`
+</details>
 
-Extract specific pages from a PDF to create a new PDF.
+### 📖 `extract_links`
 
-**Parameters:**
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `source` | object | Yes | - | PDF source |
-| `pages` | string | Yes | - | Page range (see Page Range Syntax) |
-| `output_path` | string | No | - | Save output to file |
-| `password` | string | No | - | PDF password if encrypted |
-
-**Page Range Syntax:**
-
-| Syntax | Description |
-|--------|-------------|
-| `1-5` | Pages 1 through 5 |
-| `1,3,5` | Specific pages |
-| `z` | Last page |
-| `r1` | Last page (reverse notation) |
-| `5-z` | Page 5 to end |
-| `z-1` | All pages reversed |
-| `1-z:odd` | Odd pages only |
-| `1-z:even` | Even pages only |
-| `1-10,x5` | Pages 1-10 except page 5 |
-
-**Example:**
+Extract hyperlinks and internal page navigation links.
 
 ```json
 {
-  "source": { "path": "/documents/book.pdf" },
-  "pages": "1-10,15,20-z",
-  "output_path": "/output/excerpt.pdf"
+  "sources": [{ "path": "/documents/paper.pdf" }],
+  "pages": "1-10"
 }
 ```
 
-### `merge_pdfs`
-
-Merge multiple PDF files into a single PDF.
-
-**Parameters:**
+<details>
+<summary>Parameters & Response</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `sources` | array | Yes | - | PDF sources to merge (in order) |
-| `output_path` | string | No | - | Save output to file |
-
-**Example:**
-
-```json
-{
-  "sources": [
-    { "path": "/documents/chapter1.pdf" },
-    { "path": "/documents/chapter2.pdf" },
-    { "path": "/documents/chapter3.pdf" }
-  ],
-  "output_path": "/output/complete-book.pdf"
-}
-```
-
-### `protect_pdf`
-
-Add password protection to a PDF file using 256-bit AES encryption.
-
-**Parameters:**
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `source` | object | Yes | - | PDF source |
-| `user_password` | string | Yes | - | Password to open the PDF |
-| `owner_password` | string | No | user_password | Password to change permissions |
-| `allow_print` | string | No | "full" | Print permission: "full", "low", or "none" |
-| `allow_copy` | boolean | No | true | Allow copying text/images |
-| `allow_modify` | boolean | No | true | Allow modifying the document |
-| `output_path` | string | No | - | Save output to file |
-| `password` | string | No | - | Password for source PDF if encrypted |
-
-**Example:**
-
-```json
-{
-  "source": { "path": "/documents/confidential.pdf" },
-  "user_password": "secret123",
-  "allow_print": "none",
-  "allow_copy": false,
-  "output_path": "/output/protected.pdf"
-}
-```
-
-### `unprotect_pdf`
-
-Remove password protection from an encrypted PDF.
-
-**Parameters:**
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `source` | object | Yes | - | PDF source |
-| `password` | string | Yes | - | Password for the encrypted PDF |
-| `output_path` | string | No | - | Save output to file |
-
-**Example:**
-
-```json
-{
-  "source": { "path": "/documents/protected.pdf" },
-  "password": "secret123",
-  "output_path": "/output/unprotected.pdf"
-}
-```
-
-### `extract_links`
-
-Extract hyperlinks from PDF files. Returns both external URLs and internal page navigation links.
-
-**Parameters:**
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `sources` | array | Yes | - | PDF sources |
+| `sources` | array | Yes | — | PDF sources |
 | `pages` | string | No | all | Page selection |
-| `password` | string | No | - | PDF password if encrypted |
+| `password` | string | No | — | PDF password if encrypted |
 | `cache` | boolean | No | false | Enable caching |
 
 **Response:**
@@ -378,32 +237,60 @@ Extract hyperlinks from PDF files. Returns both external URLs and internal page 
   "results": [{
     "source": "/documents/paper.pdf",
     "links": [
-      {
-        "page": 1,
-        "url": "https://example.com",
-        "text": "Click here"
-      },
-      {
-        "page": 3,
-        "dest_page": 10,
-        "text": "See Chapter 5"
-      }
+      { "page": 1, "url": "https://example.com", "text": "Click here" },
+      { "page": 3, "dest_page": 10, "text": "See Chapter 5" }
     ],
     "total_count": 2
   }]
 }
 ```
 
-### `get_page_info`
+</details>
 
-Get detailed information about each page in a PDF. Useful for planning LLM context usage.
+### 🔍 `search`
 
-**Parameters:**
+Full-text search within PDFs with surrounding context.
+
+```json
+{
+  "sources": [{ "path": "/documents/manual.pdf" }],
+  "query": "error handling",
+  "context_chars": 100
+}
+```
+
+<details>
+<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `sources` | array | Yes | - | PDF sources |
-| `password` | string | No | - | PDF password if encrypted |
+| `sources` | array | Yes | — | PDF sources |
+| `query` | string | Yes | — | Search query |
+| `case_sensitive` | boolean | No | false | Case-sensitive search |
+| `max_results` | integer | No | 100 | Maximum results to return |
+| `context_chars` | integer | No | 50 | Characters of context around match |
+| `password` | string | No | — | PDF password if encrypted |
+| `cache` | boolean | No | false | Enable caching |
+
+</details>
+
+### 🔍 `get_page_info`
+
+Get page dimensions, word/char counts, token estimates, and file sizes. Useful for planning LLM context usage.
+
+```json
+{
+  "sources": [{ "path": "/documents/report.pdf" }]
+}
+```
+
+<details>
+<summary>Parameters & Response</summary>
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sources` | array | Yes | — | PDF sources |
+| `password` | string | No | — | PDF password if encrypted |
 | `cache` | boolean | No | false | Enable caching |
 | `skip_file_sizes` | boolean | No | false | Skip file size calculation (faster) |
 
@@ -413,19 +300,14 @@ Get detailed information about each page in a PDF. Useful for planning LLM conte
 {
   "results": [{
     "source": "/documents/report.pdf",
-    "pages": [
-      {
-        "page": 1,
-        "width": 612.0,
-        "height": 792.0,
-        "rotation": 0,
-        "orientation": "portrait",
-        "char_count": 2500,
-        "word_count": 450,
-        "estimated_token_count": 625,
-        "file_size": 102400
-      }
-    ],
+    "pages": [{
+      "page": 1,
+      "width": 612.0, "height": 792.0,
+      "rotation": 0, "orientation": "portrait",
+      "char_count": 2500, "word_count": 450,
+      "estimated_token_count": 625,
+      "file_size": 102400
+    }],
     "total_pages": 10,
     "total_chars": 25000,
     "total_words": 4500,
@@ -434,31 +316,13 @@ Get detailed information about each page in a PDF. Useful for planning LLM conte
 }
 ```
 
-**Token Estimation Note:**
+> **Note:** Token counts are model-dependent approximations (~4 chars/token for Latin, ~2 tokens/char for CJK). Use as rough guidance only.
 
-Token counts are **model-dependent approximations** for context window planning:
-- Latin/English: ~4 characters per token
-- CJK (Chinese/Japanese/Korean): ~2 tokens per character
+</details>
 
-Actual token counts vary by model (GPT, Claude, etc.). Use as rough guidance only.
+### 🔍 `list_pdfs`
 
-**File Size:**
-
-By default, the tool calculates actual file sizes by splitting each page (~16ms/page). This provides accurate size information including shared resources (fonts, images). Use `skip_file_sizes=true` to skip this calculation for faster performance.
-
-### `list_pdfs`
-
-List PDF files in a directory with optional filtering. Useful for discovering available PDFs before processing.
-
-**Parameters:**
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `directory` | string | Yes | - | Directory to search for PDF files |
-| `recursive` | boolean | No | false | Search subdirectories recursively |
-| `pattern` | string | No | - | Filename pattern to filter (e.g., "report*.pdf") |
-
-**Example:**
+Discover PDF files in a directory with optional filtering.
 
 ```json
 {
@@ -468,46 +332,82 @@ List PDF files in a directory with optional filtering. Useful for discovering av
 }
 ```
 
-**Response:**
-
-```json
-{
-  "results": [{
-    "directory": "/documents",
-    "files": [
-      {
-        "path": "/documents/invoice-2024-01.pdf",
-        "name": "invoice-2024-01.pdf",
-        "size": 102400,
-        "modified": "2024-01-15T10:30:00Z"
-      },
-      {
-        "path": "/documents/2024/invoice-2024-02.pdf",
-        "name": "invoice-2024-02.pdf",
-        "size": 98304,
-        "modified": "2024-02-15T09:15:00Z"
-      }
-    ],
-    "total_count": 2
-  }]
-}
-```
-
-### `compress_pdf`
-
-Compress a PDF file to reduce its size using stream optimization, object deduplication, and image optimization.
-
-**Parameters:**
+<details>
+<summary>Parameters</summary>
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `source` | object | Yes | - | PDF source |
-| `object_streams` | string | No | "generate" | Object streams mode: "generate" (best), "preserve", "disable" |
-| `compression_level` | integer | No | 9 | Compression level (1-9, higher = better compression) |
-| `output_path` | string | No | - | Save output to file |
-| `password` | string | No | - | Password for source PDF if encrypted |
+| `directory` | string | Yes | — | Directory to search |
+| `recursive` | boolean | No | false | Search subdirectories |
+| `pattern` | string | No | — | Filename pattern (e.g., `"report*.pdf"`) |
 
-**Example:**
+</details>
+
+### ✂️ `split_pdf`
+
+Extract specific pages from a PDF to create a new PDF.
+
+```json
+{
+  "source": { "path": "/documents/book.pdf" },
+  "pages": "1-10,15,20-z",
+  "output_path": "/output/excerpt.pdf"
+}
+```
+
+<details>
+<summary>Parameters & Page Range Syntax</summary>
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `source` | object | Yes | — | PDF source |
+| `pages` | string | Yes | — | Page range (see syntax below) |
+| `output_path` | string | No | — | Save output to file |
+| `password` | string | No | — | PDF password if encrypted |
+
+**Page Range Syntax:**
+
+| Syntax | Description |
+|--------|-------------|
+| `1-5` | Pages 1 through 5 |
+| `1,3,5` | Specific pages |
+| `z` | Last page |
+| `r1` | Last page (reverse) |
+| `5-z` | Page 5 to end |
+| `z-1` | All pages reversed |
+| `1-z:odd` | Odd pages only |
+| `1-z:even` | Even pages only |
+| `1-10,x5` | Pages 1–10 except page 5 |
+
+</details>
+
+### ✂️ `merge_pdfs`
+
+Merge multiple PDFs into a single file.
+
+```json
+{
+  "sources": [
+    { "path": "/documents/chapter1.pdf" },
+    { "path": "/documents/chapter2.pdf" }
+  ],
+  "output_path": "/output/complete-book.pdf"
+}
+```
+
+<details>
+<summary>Parameters</summary>
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sources` | array | Yes | — | PDF sources to merge (in order) |
+| `output_path` | string | No | — | Save output to file |
+
+</details>
+
+### ✂️ `compress_pdf`
+
+Reduce PDF file size using stream optimization, object deduplication, and compression.
 
 ```json
 {
@@ -517,69 +417,106 @@ Compress a PDF file to reduce its size using stream optimization, object dedupli
 }
 ```
 
+<details>
+<summary>Parameters & Response</summary>
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `source` | object | Yes | — | PDF source |
+| `object_streams` | string | No | `"generate"` | `"generate"` (best) · `"preserve"` · `"disable"` |
+| `compression_level` | integer | No | 9 | 1–9 (higher = better compression) |
+| `output_path` | string | No | — | Save output to file |
+| `password` | string | No | — | PDF password if encrypted |
+
 **Response:**
 
 ```json
 {
   "results": [{
     "source": "/documents/large-report.pdf",
-    "output_cache_key": "abc123",
     "original_size": 5242880,
     "compressed_size": 2097152,
     "compression_ratio": 0.4,
-    "bytes_saved": 3145728,
-    "output_page_count": 50
+    "bytes_saved": 3145728
   }]
 }
 ```
 
-## Source Types
+</details>
 
-PDF sources can be specified in multiple ways:
+### 🔒 `protect_pdf`
+
+Add password protection using 256-bit AES encryption.
 
 ```json
-// File path (absolute or relative)
-{ "path": "/documents/file.pdf" }
-
-// Base64 encoded PDF data
-{ "base64": "JVBERi0xLjQK..." }
-
-// URL (HTTP/HTTPS)
-{ "url": "https://example.com/document.pdf" }
-
-// Cache reference (from previous operation)
-{ "cache_key": "abc123" }
+{
+  "source": { "path": "/documents/confidential.pdf" },
+  "user_password": "secret123",
+  "allow_print": "none",
+  "allow_copy": false
+}
 ```
 
-## MCP Resources
+<details>
+<summary>Parameters</summary>
 
-The PDF MCP Server can expose PDF files as MCP Resources, allowing clients to discover and read PDFs directly through the MCP protocol.
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `source` | object | Yes | — | PDF source |
+| `user_password` | string | Yes | — | Password to open the PDF |
+| `owner_password` | string | No | user_password | Password to change permissions |
+| `allow_print` | string | No | `"full"` | `"full"` · `"low"` · `"none"` |
+| `allow_copy` | boolean | No | true | Allow copying text/images |
+| `allow_modify` | boolean | No | true | Allow modifying the document |
+| `output_path` | string | No | — | Save output to file |
+| `password` | string | No | — | Password for source PDF if encrypted |
+
+</details>
+
+### 🔓 `unprotect_pdf`
+
+Remove password protection from an encrypted PDF.
+
+```json
+{
+  "source": { "path": "/documents/protected.pdf" },
+  "password": "secret123",
+  "output_path": "/output/unprotected.pdf"
+}
+```
+
+<details>
+<summary>Parameters</summary>
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `source` | object | Yes | — | PDF source |
+| `password` | string | Yes | — | Password for the encrypted PDF |
+| `output_path` | string | No | — | Save output to file |
+
+</details>
+
+## 📦 MCP Resources
+
+Expose PDFs from configured directories as MCP Resources for direct client discovery and reading.
+
+<details>
+<summary>Configuration & Details</summary>
 
 ### Enabling Resources
 
-Resources are enabled by configuring resource directories when starting the server. All PDFs in configured directories are automatically exposed as resources.
-
-**Command Line:**
-
 ```bash
-# Single directory
-pdf-mcp-server --resource-dir /documents
-
-# Multiple directories
+# Command line
 pdf-mcp-server --resource-dir /documents --resource-dir /data/pdfs
 
 # Short form
 pdf-mcp-server -r /documents -r /data/pdfs
-```
 
-**Environment Variable:**
-
-```bash
-# Colon-separated list of directories
+# Environment variable (colon-separated)
 PDF_RESOURCE_DIRS=/documents:/data/pdfs pdf-mcp-server
 ```
 
-**Claude Desktop Configuration:**
+**Claude Desktop with resources:**
 
 ```json
 {
@@ -595,7 +532,7 @@ PDF_RESOURCE_DIRS=/documents:/data/pdfs pdf-mcp-server
 }
 ```
 
-Both methods can be combined - command line arguments are added to environment variable paths.
+Both methods can be combined — command line arguments are added to environment variable paths.
 
 ### Resource URIs
 
@@ -606,73 +543,58 @@ file:///documents/report.pdf
 file:///documents/2024/invoice.pdf
 ```
 
-### Resource Operations
+### Operations
 
-**List Resources** (`resources/list`):
-
-Returns all PDF files in configured directories with metadata:
-- URI
-- Name
-- MIME type (`application/pdf`)
-- Size
-- Description (includes file size and modification date)
-
-**Read Resource** (`resources/read`):
-
-Returns the extracted text content from the PDF, formatted for LLM consumption:
-- Page-by-page text extraction
-- LLM-optimized formatting (paragraph detection, column reordering, etc.)
-- Returned as `text/plain` content
+- **`resources/list`** — Returns all PDFs with URI, name, MIME type, size, and description
+- **`resources/read`** — Returns extracted text content, formatted for LLM consumption
 
 ### Resources vs Tools vs Caching
 
 | Feature | Purpose | Use Case |
 |---------|---------|----------|
-| **Tools** | Active PDF processing | Extract text, search, manipulate PDFs |
-| **Resources** | Passive file discovery | Browse available PDFs, read content |
-| **CacheRef** | Tool chaining | Pass output between tools (e.g., split → extract) |
+| **Resources** | Passive file discovery | Browse and preview available PDFs |
+| **Tools** | Active PDF processing | Extract, search, manipulate PDFs |
+| **CacheRef** | Tool chaining | Pass output between operations |
 
-All three mechanisms are complementary:
-- Use **Resources** to discover and preview PDFs
-- Use **Tools** for specific processing tasks
-- Use **CacheRef** to chain multiple operations efficiently
+</details>
 
-## Caching
+## 🔗 Caching
 
-When `cache: true` is specified, the server returns a `cache_key` that can be used in subsequent requests:
+When `cache: true` is specified, the server returns a `cache_key` for use in subsequent requests:
 
 ```json
-// First request
-{
-  "sources": [{ "path": "/documents/large.pdf" }],
-  "cache": true
-}
+// Step 1: Extract with caching
+{ "sources": [{ "path": "/documents/large.pdf" }], "cache": true }
 
-// Response includes cache_key
-{
-  "results": [{
-    "cache_key": "a1b2c3d4",
-    "..."
-  }]
-}
-
-// Subsequent requests can use cache_key
-{
-  "sources": [{ "cache_key": "a1b2c3d4" }],
-  "pages": "50-60"
-}
+// Step 2: Use cache_key from response
+{ "sources": [{ "cache_key": "a1b2c3d4" }], "pages": "50-60" }
 ```
 
-## Development
+## 🏗️ Architecture
 
-### Prerequisites
+```mermaid
+block-beta
+  columns 1
+  block:server["MCP Server (rmcp)"]
+    columns 3
+    extract_text search split_pdf
+  end
+  block:common["Common Layer"]
+    columns 3
+    Cache["Cache Manager"] Source["Source Resolver"] Batch["Batch Executor"]
+  end
+  block:pdf["PDF Processing"]
+    columns 2
+    PDFium["pdfium-render\n(reading)"] qpdf["qpdf FFI\n(manipulation)"]
+  end
 
-- Docker (for local development without installing Rust)
-- Or: Rust 1.75+ (if building natively)
+  server --> common --> pdf
+```
 
-### Using Docker (Recommended)
+## 🧑‍💻 Development
 
-The project uses Docker Compose with profiles to separate development and production environments.
+<details>
+<summary>Docker (Recommended)</summary>
 
 ```bash
 # Build
@@ -690,153 +612,105 @@ docker compose --profile dev run --rm dev cargo fmt --all
 # Lint
 docker compose --profile dev run --rm clippy
 
-# Build production image (minimal runtime, ~120MB)
+# Build production image (~120MB)
 docker compose --profile prod build production
 
-# Clean up dev images when no longer needed
+# Clean up
 docker compose --profile dev down --rmi local
 ```
 
-### Native Development
+</details>
 
-You need to install PDFium locally. Download from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and set the `PDFIUM_PATH` environment variable.
+<details>
+<summary>Native Development</summary>
+
+Requires PDFium installed locally. Download from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and set `PDFIUM_PATH`.
 
 ```bash
-# Build
 cargo build --release
-
-# Run tests
 cargo test
-
-# Run with coverage
 cargo llvm-cov --html
 ```
 
-### Project Structure
+</details>
+
+<details>
+<summary>Project Structure</summary>
 
 ```
-pdf-mcp-server/
-├── src/
-│   ├── main.rs              # Entry point
-│   ├── lib.rs               # Library root
-│   ├── server.rs            # MCP server implementation
-│   ├── error.rs             # Error types
-│   ├── pdf/                 # PDF processing layer
-│   │   ├── mod.rs
-│   │   └── reader.rs        # PDFium wrapper
-│   └── source/              # Source handling
-│       ├── mod.rs
-│       ├── resolver.rs      # Path/URL/Base64 resolution
-│       └── cache.rs         # Caching layer
-├── tests/                   # Integration tests
-│   ├── fixtures/            # Test PDF files
-│   └── integration_test.rs
-├── npm/                     # npm wrapper package
-├── Cargo.toml
-├── Dockerfile
-└── .github/
-    └── workflows/
-        ├── ci.yml           # CI pipeline
-        └── release.yml      # Release builds
+src/
+├── main.rs              # Entry point, CLI args
+├── lib.rs               # Library root
+├── server.rs            # MCP server & tool handlers
+├── error.rs             # Error types
+├── pdf/
+│   ├── reader.rs        # PDFium wrapper (text, metadata, outline)
+│   ├── annotations.rs   # Annotation extraction
+│   ├── images.rs        # Image extraction
+│   └── qpdf.rs          # qpdf FFI (split, merge, encrypt)
+└── source/
+    ├── resolver.rs      # Path/URL/Base64 resolution
+    └── cache.rs         # LRU caching layer
 ```
 
-## Architecture
+</details>
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   MCP Server (rmcp)                 │
-├─────────────────────────────────────────────────────┤
-│  Tools: extract_text | extract_outline | search     │
-├─────────────────────────────────────────────────────┤
-│              Common Layer                           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
-│  │  Cache   │  │  Source  │  │  Batch   │           │
-│  │ Manager  │  │ Resolver │  │ Executor │           │
-│  └──────────┘  └──────────┘  └──────────┘           │
-├─────────────────────────────────────────────────────┤
-│              PDF Processing Layer                   │
-│  ┌───────────────────┐  ┌───────────────────┐       │
-│  │   pdfium-render   │  │   qpdf (FFI)      │       │
-│  │   (reading)       │  │   (manipulation)  │       │
-│  └───────────────────┘  └───────────────────┘       │
-└─────────────────────────────────────────────────────┘
-```
+## 🗺️ Roadmap
 
-## Roadmap
+<details>
+<summary>Completed Phases</summary>
 
-### Phase 1: Core Reading Features (Complete)
-- [x] Project setup
-- [x] extract_text tool
-- [x] extract_outline tool
-- [x] search tool
-- [x] extract_metadata tool
-- [x] extract_annotations tool
-- [x] Image extraction (include_images option)
-- [x] Batch processing
-- [x] Caching
+### Phase 1: Core Reading ✅
+extract_text · extract_outline · search · extract_metadata · extract_annotations · Image extraction · Batch processing · Caching
 
-### Phase 2: PDF Manipulation (Complete)
-- [x] split_pdf - Extract specific pages
-- [x] merge_pdfs - Merge multiple PDFs
-- [x] protect_pdf - Add password protection (256-bit AES)
-- [x] unprotect_pdf - Remove password protection
-- [x] compress_pdf - Reduce file size with optimization
-- [x] extract_links - Extract hyperlinks and internal links
-- [x] get_page_info - Get page dimensions and token estimates
+### Phase 2: PDF Manipulation ✅
+split_pdf · merge_pdfs · protect_pdf · unprotect_pdf · compress_pdf · extract_links · get_page_info
 
-### Phase 2.5: LLM-Optimized Text Extraction (Complete)
-- [x] Dynamic thresholds based on font size
-- [x] Paragraph detection by line spacing
-- [x] Multi-column layout detection
-- [x] Watermark removal (center mode)
-- [x] Simplified API (LLM optimization enabled by default)
+### Phase 2.5: LLM-Optimized Text ✅
+Dynamic thresholds · Paragraph detection · Multi-column layout · Watermark removal
 
-### Phase 2.6: PDF Discovery & MCP Resources (Complete)
-- [x] list_pdfs - Discover PDF files in directories
-- [x] MCP Resources - Expose PDFs as standard MCP resources
-- [x] Resource directory configuration
+### Phase 2.6: Discovery & Resources ✅
+list_pdfs · MCP Resources · Resource directory configuration
+
+</details>
 
 ### Phase 3: Advanced Features (Planned)
-- [ ] rotate_pages - Rotate specific pages
-- [ ] convert_to_images - Render PDF pages as images (PNG/JPEG)
-- [ ] extract_tables - Structured table data extraction
-- [ ] add_watermark - Add text/image watermarks
-- [ ] linearize_pdf - Web optimization for fast viewing
-- [ ] flatten_annotations - Make annotations permanent
-- [ ] reorder_pages - Rearrange page order
-- [ ] delete_pages - Remove specific pages
-- [ ] OCR support (optional, via external service)
-- [ ] PDF/A validation
-- [ ] Digital signature verification
 
-### Waiting for MCP Protocol
+- `rotate_pages` — Rotate specific pages
+- `convert_to_images` — Render pages as PNG/JPEG
+- `extract_tables` — Structured table extraction
+- `add_watermark` — Text/image watermarks
+- `linearize_pdf` — Web optimization
+- OCR support · PDF/A validation · Digital signature verification
 
-The following features depend on MCP protocol enhancements currently under discussion:
+<details>
+<summary>Waiting for MCP Protocol</summary>
 
-- [ ] **Large file upload from client** - MCP lacks a standard API for uploading large files (>20MB) from clients to servers. Currently discussed in [#1197](https://github.com/orgs/modelcontextprotocol/discussions/1197), [#1220](https://github.com/orgs/modelcontextprotocol/discussions/1220), [#1659](https://github.com/orgs/modelcontextprotocol/discussions/1659). Multimodal support is planned for 2026.
-- [ ] **Chunked file transfer** - No standard chunked upload/download mechanism exists yet
+- **Large file upload** — MCP lacks a standard API for uploading large files (>20MB). Discussed in [#1197](https://github.com/orgs/modelcontextprotocol/discussions/1197), [#1220](https://github.com/orgs/modelcontextprotocol/discussions/1220), [#1659](https://github.com/orgs/modelcontextprotocol/discussions/1659).
+- **Chunked file transfer** — No standard mechanism exists yet.
 
-Current workarounds for large files:
-- Shared filesystem (`path`)
-- Object storage with pre-signed URLs (`url`)
-- Base64 encoding (limited by client/memory constraints)
+Current workarounds: shared filesystem (`path`), object storage with pre-signed URLs (`url`), or base64 encoding.
 
-### Design Decisions: Deferred Features
+</details>
 
-The following features were considered but deferred as they provide limited value for LLM use cases:
+<details>
+<summary>Deferred Features</summary>
 
-- **Hyphenation merging** - LLMs understand hyphenated words without merging
-- **Fixed-pitch mode** - Limited use cases (monospace fonts, ASCII art)
-- **Bounding box output** - LLMs don't need coordinate information
-- **Invisible text removal** - Not supported by pdfium-render API
+These provide limited value for LLM use cases:
+- **Hyphenation merging** — LLMs understand hyphenated words
+- **Fixed-pitch mode** — Limited use cases
+- **Bounding box output** — LLMs don't need coordinates
+- **Invisible text removal** — Not supported by pdfium-render API
 
-## License
+</details>
+
+## 📄 License
 
 Apache License 2.0
 
-## Acknowledgments
+## 🙏 Acknowledgments
 
-- [PDFium](https://pdfium.googlesource.com/pdfium/) - PDF rendering engine (Apache 2.0)
-- [pdfium-render](https://crates.io/crates/pdfium-render) - Rust bindings for PDFium (Apache 2.0)
-- [qpdf](https://qpdf.sourceforge.io/) - PDF transformation library, vendored via FFI (Apache 2.0)
-- [rmcp](https://crates.io/crates/rmcp) - Rust MCP SDK
+- [PDFium](https://pdfium.googlesource.com/pdfium/) — PDF rendering engine (Apache 2.0)
+- [pdfium-render](https://crates.io/crates/pdfium-render) — Rust PDFium bindings (Apache 2.0)
+- [qpdf](https://qpdf.sourceforge.io/) — PDF transformation library, vendored via FFI (Apache 2.0)
+- [rmcp](https://crates.io/crates/rmcp) — Rust MCP SDK
