@@ -57,8 +57,9 @@ FROM base AS builder
 # Cache dependencies by building with dummy source first
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && echo '' > src/lib.rs && \
+    mkdir benches && echo 'fn main() {}' > benches/pdf_benchmark.rs && \
     cargo build --release && \
-    rm -rf src
+    rm -rf src benches
 
 # Build the actual application
 COPY src/ src/
