@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.paradyno/pdf-mcp-server",
   "title": "PDF MCP Server",
-  "description": "MCP server for PDF processing - text extraction, metadata, annotations, images, links, form fields, split, merge, compress, encrypt/decrypt, render, and structure summarization",
+  "description": "MCP server for PDF processing: extract, split, merge, compress, encrypt, render, and more",
   "repository": {
     "url": "https://github.com/paradyno/PDF-MCP-Server",
     "source": "github"
