@@ -344,6 +344,19 @@ docker compose --profile dev run --rm coverage
 open coverage/html/index.html
 ```
 
+## MCP Registry
+
+The server is published to the [MCP Registry](https://registry.modelcontextprotocol.io/) as a Docker/OCI image on ghcr.io.
+
+- **Registry name**: `io.github.paradyno/pdf-mcp-server`
+- **Config file**: `server.json` (repo root)
+- **Docker label**: `io.modelcontextprotocol.server.name` in Dockerfile (production stage)
+- **Publish flow**: tag push (`v*`) → GitHub Actions (`release.yml`) → Docker push to ghcr.io → `mcp-publisher publish` (OIDC auth)
+
+### Version Sync
+
+`server.json` の `version` と `packages[].identifier` の Docker tag は、リリース時に GitHub Actions の `publish-mcp-registry` ジョブが git tag から自動で書き換える。そのため `server.json` のバージョンを手動で更新する必要はないが、**`server.json` をローカルで編集した場合はバージョン値を変えないよう注意すること**。CI が `jq` で上書きする。
+
 ## Future Improvements (Phase 3+)
 
 Potential features to add:

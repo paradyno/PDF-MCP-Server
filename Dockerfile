@@ -69,6 +69,8 @@ RUN touch src/main.rs src/lib.rs && cargo build --release
 # ============================================================
 FROM debian:trixie-slim AS production
 
+LABEL io.modelcontextprotocol.server.name="io.github.paradyno/pdf-mcp-server"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
