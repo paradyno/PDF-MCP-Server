@@ -779,7 +779,7 @@ block-beta
 
 ## ⚡ Performance
 
-Benchmarked with a 14-page technical paper (tracemonkey.pdf, ~1 MB) on Docker (Apple Silicon):
+Benchmarked with a 14-page technical paper ([tracemonkey.pdf](https://github.com/paradyno/PDF-MCP-Server/blob/main/tests/fixtures/tracemonkey.pdf), ~1 MB) on Docker (Apple Silicon):
 
 | Operation | Time | What it means |
 |-----------|------|---------------|
