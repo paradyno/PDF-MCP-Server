@@ -1568,7 +1568,7 @@ fn test_list_pdfs_basic() {
         pattern: None,
     };
 
-    let result = PdfServer::process_list_pdfs_public(&params);
+    let result = PdfServer::new().process_list_pdfs_public(&params);
     assert!(result.is_ok(), "list_pdfs should succeed");
 
     let list_result = result.unwrap();
@@ -1595,7 +1595,7 @@ fn test_list_pdfs_with_pattern() {
         pattern: Some("dummy*".to_string()),
     };
 
-    let result = PdfServer::process_list_pdfs_public(&params);
+    let result = PdfServer::new().process_list_pdfs_public(&params);
     assert!(result.is_ok(), "list_pdfs with pattern should succeed");
 
     let list_result = result.unwrap();
@@ -1617,7 +1617,7 @@ fn test_list_pdfs_nonexistent_directory() {
         pattern: None,
     };
 
-    let result = PdfServer::process_list_pdfs_public(&params);
+    let result = PdfServer::new().process_list_pdfs_public(&params);
     assert!(
         result.is_err(),
         "list_pdfs should fail for non-existent directory"
@@ -1634,7 +1634,7 @@ fn test_list_pdfs_not_a_directory() {
         pattern: None,
     };
 
-    let result = PdfServer::process_list_pdfs_public(&params);
+    let result = PdfServer::new().process_list_pdfs_public(&params);
     assert!(result.is_err(), "list_pdfs should fail for file path");
 }
 

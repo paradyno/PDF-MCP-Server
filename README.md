@@ -16,9 +16,9 @@ Give your AI agents powerful PDF capabilities — extract text, search, split, m
 | 🔍 **Search & Discovery** | `search` · `list_pdfs` · `get_page_info` · `summarize_structure` |
 | 🖼️ **Media** | Image extraction (via `extract_text`) · `convert_page_to_image` |
 | ✂️ **Manipulation** | `split_pdf` · `merge_pdfs` · `compress_pdf` · `fill_form` |
-| 🔒 **Security** | `protect_pdf` · `unprotect_pdf` · Password-protected PDF support |
+| 🔒 **Security** | `protect_pdf` · `unprotect_pdf` · Password-protected PDF support · Path sandboxing · SSRF protection |
 | 📦 **Resources** | Expose PDFs as MCP Resources for direct client access |
-| ⚡ **Performance** | Batch processing · LRU caching · Operation chaining via cache keys |
+| ⚡ **Performance** | Batch processing · LRU caching (with byte budget) · Operation chaining via cache keys |
 
 ## 🚀 Installation
 
@@ -698,7 +698,7 @@ pdf-mcp-server --resource-dir /documents --resource-dir /data/pdfs
 # Short form
 pdf-mcp-server -r /documents -r /data/pdfs
 
-# Environment variable (colon-separated)
+# Environment variable (path-separated: colon on Unix, semicolon on Windows)
 PDF_RESOURCE_DIRS=/documents:/data/pdfs pdf-mcp-server
 ```
 
@@ -741,6 +741,40 @@ file:///documents/2024/invoice.pdf
 | **Resources** | Passive file discovery | Browse and preview available PDFs |
 | **Tools** | Active PDF processing | Extract, search, manipulate PDFs |
 | **CacheRef** | Tool chaining | Pass output between operations |
+
+</details>
+
+## 🔒 Security
+
+<details>
+<summary>Configuration & Details</summary>
+
+### Path Sandboxing
+
+When `--resource-dir` is specified, all file operations (reads and writes) are sandboxed to the configured directories. Path traversal attempts (e.g., `../../etc/passwd`) are blocked via `canonicalize()`.
+
+Without `--resource-dir`, all paths are allowed (backward compatible).
+
+### SSRF Protection
+
+URL sources are checked for SSRF by default. URLs that resolve to private or reserved IP addresses are blocked:
+- Loopback (`127.0.0.0/8`, `::1`)
+- Private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`)
+- Link-local (`169.254/16`, `fe80::/10`) — blocks cloud metadata endpoints
+- CGNAT (`100.64/10`)
+- Broadcast, unspecified
+
+Use `--allow-private-urls` or `PDF_ALLOW_PRIVATE_URLS=1` to disable this check (e.g., for local development).
+
+### Resource Limits
+
+| Limit | Default | CLI Flag | Env Var |
+|-------|---------|----------|---------|
+| URL download size | 100 MB | `--max-download-size` | `PDF_MAX_DOWNLOAD_BYTES` |
+| Cache total bytes | 512 MB | `--cache-max-bytes` | `PDF_CACHE_MAX_BYTES` |
+| Cache entries | 100 | `--cache-max-entries` | `PDF_CACHE_MAX_ENTRIES` |
+| Image scale factor | 10.0 | `--max-image-scale` | `PDF_MAX_IMAGE_SCALE` |
+| Image pixel area | 100M | `--max-image-pixels` | `PDF_MAX_IMAGE_PIXELS` |
 
 </details>
 

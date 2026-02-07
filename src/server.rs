@@ -115,13 +115,46 @@ impl<'de> serde::Deserialize<'de> for PdfSource {
     }
 }
 
+/// Security and resource configuration for the PDF MCP Server
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
+    /// Directories to expose as PDF resources
+    pub resource_dirs: Vec<String>,
+    /// Allow URLs that resolve to private/reserved IPs (default: false)
+    pub allow_private_urls: bool,
+    /// Maximum download size in bytes for URL sources (default: 100MB)
+    pub max_download_bytes: u64,
+    /// Maximum total bytes in cache (default: 512MB)
+    pub cache_max_bytes: usize,
+    /// Maximum number of cache entries (default: 100)
+    pub cache_max_entries: usize,
+    /// Maximum image scale factor for convert_page_to_image (default: 10.0)
+    pub max_image_scale: f32,
+    /// Maximum total pixel area for convert_page_to_image (default: 100_000_000)
+    pub max_image_pixels: u64,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            resource_dirs: Vec::new(),
+            allow_private_urls: false,
+            max_download_bytes: 100 * 1024 * 1024, // 100MB
+            cache_max_bytes: 512 * 1024 * 1024,    // 512MB
+            cache_max_entries: 100,
+            max_image_scale: 10.0,
+            max_image_pixels: 100_000_000,
+        }
+    }
+}
+
 /// PDF MCP Server
 #[derive(Clone)]
 pub struct PdfServer {
     cache: Arc<RwLock<CacheManager>>,
     tool_router: ToolRouter<Self>,
-    /// Directories to expose as PDF resources
-    resource_dirs: Arc<Vec<String>>,
+    /// Server configuration
+    config: Arc<ServerConfig>,
 }
 
 // ============================================================================
@@ -1054,15 +1087,24 @@ pub struct SummarizeStructureResult {
 #[tool_router]
 impl PdfServer {
     pub fn new() -> Self {
-        Self::with_resource_dirs(Vec::new())
+        Self::with_config(ServerConfig::default())
     }
 
     /// Create a new PdfServer with specified resource directories
     pub fn with_resource_dirs(dirs: Vec<String>) -> Self {
+        Self::with_config(ServerConfig {
+            resource_dirs: dirs,
+            ..ServerConfig::default()
+        })
+    }
+
+    /// Create a new PdfServer with full configuration
+    pub fn with_config(config: ServerConfig) -> Self {
+        let cache = CacheManager::new(config.cache_max_entries, config.cache_max_bytes);
         Self {
-            cache: Arc::new(RwLock::new(CacheManager::new(100))),
+            cache: Arc::new(RwLock::new(cache)),
             tool_router: Self::tool_router(),
-            resource_dirs: Arc::new(dirs),
+            config: Arc::new(config),
         }
     }
 
@@ -1079,13 +1121,16 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_extract_text(source, &params)
                 .await
-                .unwrap_or_else(|e| ExtractTextResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    metadata: None,
-                    pages: vec![],
-                    images: None,
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "extract_text failed");
+                    ExtractTextResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        metadata: None,
+                        pages: vec![],
+                        images: None,
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1110,11 +1155,14 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_extract_outline(source, &params)
                 .await
-                .unwrap_or_else(|e| ExtractOutlineResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    outline: vec![],
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "extract_outline failed");
+                    ExtractOutlineResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        outline: vec![],
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1136,12 +1184,15 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_search(source, &params)
                 .await
-                .unwrap_or_else(|e| SearchResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    matches: vec![],
-                    total_matches: 0,
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "search failed");
+                    SearchResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        matches: vec![],
+                        total_matches: 0,
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1166,18 +1217,21 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_extract_metadata(source, &params)
                 .await
-                .unwrap_or_else(|e| ExtractMetadataResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    title: None,
-                    author: None,
-                    subject: None,
-                    creator: None,
-                    producer: None,
-                    creation_date: None,
-                    modification_date: None,
-                    page_count: 0,
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "extract_metadata failed");
+                    ExtractMetadataResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        title: None,
+                        author: None,
+                        subject: None,
+                        creator: None,
+                        producer: None,
+                        creation_date: None,
+                        modification_date: None,
+                        page_count: 0,
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1202,12 +1256,15 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_extract_annotations(source, &params)
                 .await
-                .unwrap_or_else(|e| ExtractAnnotationsResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    annotations: vec![],
-                    total_count: 0,
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "extract_annotations failed");
+                    ExtractAnnotationsResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        annotations: vec![],
+                        total_count: 0,
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1234,12 +1291,15 @@ Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"ht
         let result = self
             .process_split_pdf(&params)
             .await
-            .unwrap_or_else(|e| SplitPdfResult {
-                source: Self::source_name(&params.source),
-                output_cache_key: String::new(),
-                output_page_count: 0,
-                output_path: None,
-                error: Some(e.to_string()),
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "split_pdf failed");
+                SplitPdfResult {
+                    source: Self::source_name(&params.source),
+                    output_cache_key: String::new(),
+                    output_page_count: 0,
+                    output_path: None,
+                    error: Some(e.client_message()),
+                }
             });
 
         let response = serde_json::json!({ "results": [result] });
@@ -1261,12 +1321,15 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
         let result = self
             .process_merge_pdfs(&params)
             .await
-            .unwrap_or_else(|e| MergePdfsResult {
-                source_count: params.sources.len() as u32,
-                output_cache_key: String::new(),
-                output_page_count: 0,
-                output_path: None,
-                error: Some(e.to_string()),
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "merge_pdfs failed");
+                MergePdfsResult {
+                    source_count: params.sources.len() as u32,
+                    output_cache_key: String::new(),
+                    output_page_count: 0,
+                    output_path: None,
+                    error: Some(e.client_message()),
+                }
             });
 
         let response = serde_json::json!({ "results": [result] });
@@ -1292,12 +1355,15 @@ Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"ht
         let result = self
             .process_protect_pdf(&params)
             .await
-            .unwrap_or_else(|e| ProtectPdfResult {
-                source: Self::source_name(&params.source),
-                output_cache_key: String::new(),
-                output_page_count: 0,
-                output_path: None,
-                error: Some(e.to_string()),
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "protect_pdf failed");
+                ProtectPdfResult {
+                    source: Self::source_name(&params.source),
+                    output_cache_key: String::new(),
+                    output_page_count: 0,
+                    output_path: None,
+                    error: Some(e.client_message()),
+                }
             });
 
         let response = serde_json::json!({ "results": [result] });
@@ -1316,12 +1382,15 @@ Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"ht
         let result = self
             .process_unprotect_pdf(&params)
             .await
-            .unwrap_or_else(|e| UnprotectPdfResult {
-                source: Self::source_name(&params.source),
-                output_cache_key: String::new(),
-                output_page_count: 0,
-                output_path: None,
-                error: Some(e.to_string()),
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "unprotect_pdf failed");
+                UnprotectPdfResult {
+                    source: Self::source_name(&params.source),
+                    output_cache_key: String::new(),
+                    output_page_count: 0,
+                    output_path: None,
+                    error: Some(e.client_message()),
+                }
             });
 
         let response = serde_json::json!({ "results": [result] });
@@ -1347,12 +1416,15 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_extract_links(source, &params)
                 .await
-                .unwrap_or_else(|e| ExtractLinksResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    links: vec![],
-                    total_count: 0,
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "extract_links failed");
+                    ExtractLinksResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        links: vec![],
+                        total_count: 0,
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1389,15 +1461,18 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_get_page_info(source, &params)
                 .await
-                .unwrap_or_else(|e| GetPageInfoResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    pages: vec![],
-                    total_pages: 0,
-                    total_chars: 0,
-                    total_words: 0,
-                    total_estimated_token_count: 0,
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "get_page_info failed");
+                    GetPageInfoResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        pages: vec![],
+                        total_pages: 0,
+                        total_chars: 0,
+                        total_words: 0,
+                        total_estimated_token_count: 0,
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1422,16 +1497,19 @@ Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"ht
         let result = self
             .process_compress_pdf(&params)
             .await
-            .unwrap_or_else(|e| CompressPdfResult {
-                source: Self::source_name(&params.source),
-                output_cache_key: String::new(),
-                original_size: 0,
-                compressed_size: 0,
-                compression_ratio: 1.0,
-                bytes_saved: 0,
-                output_page_count: 0,
-                output_path: None,
-                error: Some(e.to_string()),
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "compress_pdf failed");
+                CompressPdfResult {
+                    source: Self::source_name(&params.source),
+                    output_cache_key: String::new(),
+                    original_size: 0,
+                    compressed_size: 0,
+                    compression_ratio: 1.0,
+                    bytes_saved: 0,
+                    output_page_count: 0,
+                    output_path: None,
+                    error: Some(e.client_message()),
+                }
             });
 
         let response = serde_json::json!({ "results": [result] });
@@ -1461,11 +1539,14 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_convert_page_to_image(source, &params)
                 .await
-                .unwrap_or_else(|e| ConvertPageToImageResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    pages: vec![],
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "convert_page_to_image failed");
+                    ConvertPageToImageResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        pages: vec![],
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1501,12 +1582,15 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_extract_form_fields(source, &params)
                 .await
-                .unwrap_or_else(|e| ExtractFormFieldsResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    fields: vec![],
-                    total_fields: 0,
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "extract_form_fields failed");
+                    ExtractFormFieldsResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        fields: vec![],
+                        total_fields: 0,
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1536,14 +1620,17 @@ Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"ht
         let result = self
             .process_fill_form(&params)
             .await
-            .unwrap_or_else(|e| FillFormResult {
-                source: Self::source_name(&params.source),
-                output_cache_key: String::new(),
-                fields_filled: 0,
-                fields_skipped: vec![],
-                output_page_count: 0,
-                output_path: None,
-                error: Some(e.to_string()),
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "fill_form failed");
+                FillFormResult {
+                    source: Self::source_name(&params.source),
+                    output_cache_key: String::new(),
+                    fields_filled: 0,
+                    fields_skipped: vec![],
+                    output_page_count: 0,
+                    output_path: None,
+                    error: Some(e.client_message()),
+                }
             });
 
         let response = serde_json::json!({ "results": [result] });
@@ -1576,26 +1663,29 @@ Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {
             let result = self
                 .process_summarize_structure(source, &params)
                 .await
-                .unwrap_or_else(|e| SummarizeStructureResult {
-                    source: Self::source_name(source),
-                    cache_key: None,
-                    page_count: 0,
-                    file_size: 0,
-                    metadata: None,
-                    has_outline: false,
-                    outline_items: 0,
-                    total_chars: 0,
-                    total_words: 0,
-                    total_estimated_tokens: 0,
-                    pages: vec![],
-                    total_images: 0,
-                    total_links: 0,
-                    total_annotations: 0,
-                    has_form: false,
-                    form_field_count: 0,
-                    form_field_types: HashMap::new(),
-                    is_encrypted: false,
-                    error: Some(e.to_string()),
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "summarize_structure failed");
+                    SummarizeStructureResult {
+                        source: Self::source_name(source),
+                        cache_key: None,
+                        page_count: 0,
+                        file_size: 0,
+                        metadata: None,
+                        has_outline: false,
+                        outline_items: 0,
+                        total_chars: 0,
+                        total_words: 0,
+                        total_estimated_tokens: 0,
+                        pages: vec![],
+                        total_images: 0,
+                        total_links: 0,
+                        total_annotations: 0,
+                        has_form: false,
+                        form_field_count: 0,
+                        form_field_types: HashMap::new(),
+                        is_encrypted: false,
+                        error: Some(e.client_message()),
+                    }
                 });
             results.push(result);
         }
@@ -1617,11 +1707,14 @@ Returns for each file:
 Supports recursive search and glob pattern filtering."
     )]
     async fn list_pdfs(&self, Parameters(params): Parameters<ListPdfsParams>) -> String {
-        let result = Self::process_list_pdfs(&params).unwrap_or_else(|e| ListPdfsResult {
-            directory: params.directory.clone(),
-            files: vec![],
-            total_count: 0,
-            error: Some(e.to_string()),
+        let result = self.process_list_pdfs(&params).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "list_pdfs failed");
+            ListPdfsResult {
+                directory: params.directory.clone(),
+                files: vec![],
+                total_count: 0,
+                error: Some(e.client_message()),
+            }
         });
 
         let response = serde_json::json!({ "results": [result] });
@@ -1641,10 +1734,111 @@ impl PdfServer {
 
     async fn resolve_source(&self, source: &PdfSource) -> crate::error::Result<ResolvedPdf> {
         match source {
-            PdfSource::Path { path } => resolve_path(path),
+            PdfSource::Path { path } => {
+                self.validate_path_access(path)?;
+                resolve_path(path)
+            }
             PdfSource::Base64 { base64 } => resolve_base64(base64),
-            PdfSource::Url { url } => resolve_url(url).await,
+            PdfSource::Url { url } => {
+                resolve_url(
+                    url,
+                    self.config.allow_private_urls,
+                    self.config.max_download_bytes,
+                )
+                .await
+            }
             PdfSource::CacheRef { cache_key } => resolve_cache(cache_key, &self.cache).await,
+        }
+    }
+
+    /// Validate that a path is within allowed resource directories.
+    /// If no resource_dirs are configured, all paths are allowed (backward compatible).
+    fn validate_path_access(&self, path: &str) -> crate::error::Result<std::path::PathBuf> {
+        if self.config.resource_dirs.is_empty() {
+            return Ok(std::path::PathBuf::from(path));
+        }
+
+        let canonical = std::fs::canonicalize(path).map_err(|_| {
+            crate::error::Error::PathAccessDenied {
+                path: path.to_string(),
+            }
+        })?;
+
+        for dir in &self.config.resource_dirs {
+            if let Ok(canonical_dir) = std::fs::canonicalize(dir) {
+                if canonical.starts_with(&canonical_dir) {
+                    return Ok(canonical);
+                }
+            }
+        }
+
+        Err(crate::error::Error::PathAccessDenied {
+            path: path.to_string(),
+        })
+    }
+
+    /// Validate that an output path is within allowed resource directories.
+    /// Canonicalizes the parent directory since the output file may not exist yet.
+    fn validate_output_path_access(
+        &self,
+        path: &str,
+    ) -> crate::error::Result<std::path::PathBuf> {
+        if self.config.resource_dirs.is_empty() {
+            return Ok(std::path::PathBuf::from(path));
+        }
+
+        let path_obj = std::path::Path::new(path);
+        let parent = path_obj
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+
+        let canonical_parent = std::fs::canonicalize(parent).map_err(|_| {
+            crate::error::Error::PathAccessDenied {
+                path: path.to_string(),
+            }
+        })?;
+
+        let canonical_target = canonical_parent.join(
+            path_obj
+                .file_name()
+                .unwrap_or(std::ffi::OsStr::new("")),
+        );
+
+        for dir in &self.config.resource_dirs {
+            if let Ok(canonical_dir) = std::fs::canonicalize(dir) {
+                if canonical_target.starts_with(&canonical_dir) {
+                    return Ok(canonical_target);
+                }
+            }
+        }
+
+        Err(crate::error::Error::PathAccessDenied {
+            path: path.to_string(),
+        })
+    }
+
+    /// Write output data to a file path, with sandbox validation.
+    fn write_output(
+        &self,
+        output_path: &Option<String>,
+        data: &[u8],
+    ) -> crate::error::Result<Option<String>> {
+        if let Some(ref path_str) = output_path {
+            self.validate_output_path_access(path_str)?;
+
+            let path = Path::new(path_str);
+
+            // Create parent directories if they don't exist
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+
+            std::fs::write(path, data)?;
+            Ok(Some(path_str.clone()))
+        } else {
+            Ok(None)
         }
     }
 
@@ -1658,79 +1852,92 @@ impl PdfServer {
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
         };
 
-        // Open PDF
-        let reader = PdfReader::open_bytes(&resolved.data, params.password.as_deref())?;
+        // Move CPU-heavy PDF work to blocking thread pool
+        let data = resolved.data;
+        let password = params.password.clone();
+        let include_metadata = params.include_metadata;
+        let include_images = params.include_images;
+        let pages_param = params.pages.clone();
 
-        // Get metadata
-        let metadata = if params.include_metadata {
-            let meta = reader.metadata();
-            Some(PdfMetadata {
-                title: meta.title.clone(),
-                author: meta.author.clone(),
-                subject: meta.subject.clone(),
-                creator: meta.creator.clone(),
-                producer: meta.producer.clone(),
-                creation_date: meta.creation_date.clone(),
-                modification_date: meta.modification_date.clone(),
-                page_count: reader.page_count(),
-            })
-        } else {
-            None
-        };
+        let (metadata, pages, images) = tokio::task::spawn_blocking(move || {
+            // Open PDF
+            let reader = PdfReader::open_bytes(&data, password.as_deref())?;
 
-        // Determine which pages to extract
-        let pages_to_extract = if let Some(ref page_range) = params.pages {
-            parse_page_range(page_range, reader.page_count())?
-        } else {
-            (1..=reader.page_count()).collect()
-        };
+            // Get metadata
+            let metadata = if include_metadata {
+                let meta = reader.metadata();
+                Some(PdfMetadata {
+                    title: meta.title.clone(),
+                    author: meta.author.clone(),
+                    subject: meta.subject.clone(),
+                    creator: meta.creator.clone(),
+                    producer: meta.producer.clone(),
+                    creation_date: meta.creation_date.clone(),
+                    modification_date: meta.modification_date.clone(),
+                    page_count: reader.page_count(),
+                })
+            } else {
+                None
+            };
 
-        // Extract text with LLM-optimized settings
-        let config = TextExtractionConfig::default();
-        let page_texts = extract_text_with_options(
-            &resolved.data,
-            params.password.as_deref(),
-            Some(&pages_to_extract),
-            &config,
-        )?;
-        let pages: Vec<PageContent> = page_texts
-            .into_iter()
-            .map(|(page, text)| PageContent { page, text })
-            .collect();
+            // Determine which pages to extract
+            let pages_to_extract = if let Some(ref page_range) = pages_param {
+                parse_page_range(page_range, reader.page_count())?
+            } else {
+                (1..=reader.page_count()).collect()
+            };
 
-        // Extract images if requested
-        let images = if params.include_images {
-            let extracted = extract_images_from_pages(
-                &resolved.data,
-                params.password.as_deref(),
-                &pages_to_extract,
+            // Extract text with LLM-optimized settings
+            let config = TextExtractionConfig::default();
+            let page_texts = extract_text_with_options(
+                &data,
+                password.as_deref(),
+                Some(&pages_to_extract),
+                &config,
             )?;
-            Some(
-                extracted
-                    .into_iter()
-                    .map(|img| ImageInfo {
-                        page: img.page,
-                        index: img.index,
-                        width: img.width,
-                        height: img.height,
-                        data_base64: img.data_base64,
-                        mime_type: img.mime_type,
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
+            let pages: Vec<PageContent> = page_texts
+                .into_iter()
+                .map(|(page, text)| PageContent { page, text })
+                .collect();
+
+            // Extract images if requested
+            let images = if include_images {
+                let extracted = extract_images_from_pages(
+                    &data,
+                    password.as_deref(),
+                    &pages_to_extract,
+                )?;
+                Some(
+                    extracted
+                        .into_iter()
+                        .map(|img| ImageInfo {
+                            page: img.page,
+                            index: img.index,
+                            width: img.width,
+                            height: img.height,
+                            data_base64: img.data_base64,
+                            mime_type: img.mime_type,
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
+            Ok::<_, crate::error::Error>((metadata, pages, images))
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         Ok(ExtractTextResult {
             source: source_name,
@@ -1752,34 +1959,40 @@ impl PdfServer {
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
         };
 
-        // Open PDF and extract only metadata (no text extraction)
-        let reader =
-            PdfReader::open_bytes_metadata_only(&resolved.data, params.password.as_deref())?;
-        let meta = reader.metadata();
+        let data = resolved.data;
+        let password = params.password.clone();
 
-        Ok(ExtractMetadataResult {
-            source: source_name,
-            cache_key,
-            title: meta.title.clone(),
-            author: meta.author.clone(),
-            subject: meta.subject.clone(),
-            creator: meta.creator.clone(),
-            producer: meta.producer.clone(),
-            creation_date: meta.creation_date.clone(),
-            modification_date: meta.modification_date.clone(),
-            page_count: reader.page_count(),
-            error: None,
+        let result = tokio::task::spawn_blocking(move || {
+            let reader = PdfReader::open_bytes_metadata_only(&data, password.as_deref())?;
+            let meta = reader.metadata();
+            Ok::<_, crate::error::Error>(ExtractMetadataResult {
+                source: source_name,
+                cache_key,
+                title: meta.title.clone(),
+                author: meta.author.clone(),
+                subject: meta.subject.clone(),
+                creator: meta.creator.clone(),
+                producer: meta.producer.clone(),
+                creation_date: meta.creation_date.clone(),
+                modification_date: meta.modification_date.clone(),
+                page_count: reader.page_count(),
+                error: None,
+            })
         })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
+
+        Ok(result)
     }
 
     async fn process_extract_outline(
@@ -1792,22 +2005,26 @@ impl PdfServer {
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
         };
 
-        // Open PDF
-        let reader = PdfReader::open_bytes(&resolved.data, params.password.as_deref())?;
+        let data = resolved.data;
+        let password = params.password.clone();
 
-        // Get outline
-        let pdf_outline = reader.get_outline();
-        let outline = Self::convert_outline(pdf_outline);
+        let outline = tokio::task::spawn_blocking(move || {
+            let reader = PdfReader::open_bytes(&data, password.as_deref())?;
+            let pdf_outline = reader.get_outline();
+            Ok::<_, crate::error::Error>(Self::convert_outline(pdf_outline))
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         Ok(ExtractOutlineResult {
             source: source_name,
@@ -1838,66 +2055,73 @@ impl PdfServer {
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
         };
 
-        // Open PDF
-        let reader = PdfReader::open_bytes(&resolved.data, params.password.as_deref())?;
+        let data = resolved.data;
+        let password = params.password.clone();
+        let query = params.query.clone();
+        let case_sensitive = params.case_sensitive;
+        let max_results = params.max_results;
+        let context_chars = params.context_chars;
 
-        // Search
-        let page_matches = reader.search(&params.query, params.case_sensitive);
+        let (matches, total_matches) = tokio::task::spawn_blocking(move || {
+            let reader = PdfReader::open_bytes(&data, password.as_deref())?;
+            let page_matches = reader.search(&query, case_sensitive);
 
-        let mut matches = Vec::new();
-        let mut total_matches: u32 = 0;
+            let mut matches = Vec::new();
+            let mut total_matches: u32 = 0;
 
-        for (page, text) in page_matches {
-            let search_text = if params.case_sensitive {
-                text.clone()
-            } else {
-                text.to_lowercase()
-            };
-            let query = if params.case_sensitive {
-                params.query.clone()
-            } else {
-                params.query.to_lowercase()
-            };
+            for (page, text) in page_matches {
+                let search_text = if case_sensitive {
+                    text.clone()
+                } else {
+                    text.to_lowercase()
+                };
+                let q = if case_sensitive {
+                    query.clone()
+                } else {
+                    query.to_lowercase()
+                };
 
-            // Find all occurrences
-            let mut start = 0;
-            while let Some(pos) = search_text[start..].find(&query) {
-                let actual_pos = start + pos;
+                let mut start = 0;
+                while let Some(pos) = search_text[start..].find(&q) {
+                    let actual_pos = start + pos;
+                    let context_start = actual_pos.saturating_sub(context_chars as usize);
+                    let context_end =
+                        (actual_pos + q.len() + context_chars as usize).min(text.len());
+                    let context = text[context_start..context_end].to_string();
 
-                // Extract context
-                let context_start = actual_pos.saturating_sub(params.context_chars as usize);
-                let context_end =
-                    (actual_pos + query.len() + params.context_chars as usize).min(text.len());
-                let context = text[context_start..context_end].to_string();
+                    matches.push(SearchMatch {
+                        page,
+                        context,
+                        position: actual_pos,
+                    });
 
-                matches.push(SearchMatch {
-                    page,
-                    context,
-                    position: actual_pos,
-                });
+                    total_matches += 1;
+                    if total_matches >= max_results {
+                        break;
+                    }
 
-                total_matches += 1;
-                if total_matches >= params.max_results {
-                    break;
+                    start = actual_pos + 1;
                 }
 
-                start = actual_pos + 1;
+                if total_matches >= max_results {
+                    break;
+                }
             }
 
-            if total_matches >= params.max_results {
-                break;
-            }
-        }
+            Ok::<_, crate::error::Error>((matches, total_matches))
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         Ok(SearchResult {
             source: source_name,
@@ -1918,62 +2142,68 @@ impl PdfServer {
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
         };
 
-        // Parse page range if specified
-        // We need to get page count first, so we'll open the PDF briefly
-        let reader =
-            PdfReader::open_bytes_metadata_only(&resolved.data, params.password.as_deref())?;
-        let page_count = reader.page_count();
+        let data = resolved.data;
+        let password = params.password.clone();
+        let pages_param = params.pages.clone();
+        let annotation_types_param = params.annotation_types.clone();
 
-        let page_numbers = if let Some(ref page_range) = params.pages {
-            Some(parse_page_range(page_range, page_count)?)
-        } else {
-            None
-        };
+        let annotations = tokio::task::spawn_blocking(move || {
+            let reader = PdfReader::open_bytes_metadata_only(&data, password.as_deref())?;
+            let page_count = reader.page_count();
 
-        // Extract annotations
-        let annotation_types = if params.annotation_types.is_empty() {
-            None
-        } else {
-            Some(params.annotation_types.as_slice())
-        };
+            let page_numbers = if let Some(ref page_range) = pages_param {
+                Some(parse_page_range(page_range, page_count)?)
+            } else {
+                None
+            };
 
-        let pdf_annotations = extract_annotations(
-            &resolved.data,
-            params.password.as_deref(),
-            page_numbers.as_deref(),
-            annotation_types,
-        )?;
+            let annotation_types = if annotation_types_param.is_empty() {
+                None
+            } else {
+                Some(annotation_types_param.as_slice())
+            };
 
-        // Convert to response type
-        let annotations: Vec<AnnotationInfo> = pdf_annotations
-            .into_iter()
-            .map(|ann| AnnotationInfo {
-                page: ann.page,
-                annotation_type: ann.annotation_type,
-                contents: ann.contents,
-                author: ann.author,
-                created: ann.created,
-                modified: ann.modified,
-                bounds: ann.bounds.map(|(left, top, right, bottom)| RectInfo {
-                    left,
-                    top,
-                    right,
-                    bottom,
-                }),
-                highlighted_text: ann.highlighted_text,
-                color: ann.color,
-            })
-            .collect();
+            let pdf_annotations = extract_annotations(
+                &data,
+                password.as_deref(),
+                page_numbers.as_deref(),
+                annotation_types,
+            )?;
+
+            let annotations: Vec<AnnotationInfo> = pdf_annotations
+                .into_iter()
+                .map(|ann| AnnotationInfo {
+                    page: ann.page,
+                    annotation_type: ann.annotation_type,
+                    contents: ann.contents,
+                    author: ann.author,
+                    created: ann.created,
+                    modified: ann.modified,
+                    bounds: ann.bounds.map(|(left, top, right, bottom)| RectInfo {
+                        left,
+                        top,
+                        right,
+                        bottom,
+                    }),
+                    highlighted_text: ann.highlighted_text,
+                    color: ann.color,
+                })
+                .collect();
+
+            Ok::<_, crate::error::Error>(annotations)
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         let total_count = annotations.len() as u32;
 
@@ -1993,37 +2223,32 @@ impl PdfServer {
         let resolved = self.resolve_source(&params.source).await?;
         let source_name = resolved.source_name.clone();
 
-        // Use qpdf to split pages
-        let output_data =
-            QpdfWrapper::split_pages(&resolved.data, &params.pages, params.password.as_deref())?;
+        let data = resolved.data;
+        let pages = params.pages.clone();
+        let password = params.password.clone();
 
-        // Get page count of output PDF
-        let output_page_count =
-            QpdfWrapper::get_page_count(&output_data, params.password.as_deref())?;
+        let (output_data, output_page_count) = tokio::task::spawn_blocking(move || {
+            let output_data =
+                QpdfWrapper::split_pages(&data, &pages, password.as_deref())?;
+            let output_page_count =
+                QpdfWrapper::get_page_count(&output_data, password.as_deref())?;
+            Ok::<_, crate::error::Error>((output_data, output_page_count))
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         // Always cache the output for chaining operations
-        let output_cache_key = CacheManager::generate_key();
-        self.cache
-            .write()
-            .await
-            .put(output_cache_key.clone(), output_data.clone());
+        let output_cache_key = {
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), output_data.clone());
+            key
+        };
 
         // Save to file if output_path is specified
-        let output_path = if let Some(ref path_str) = params.output_path {
-            let path = Path::new(path_str);
-
-            // Create parent directories if they don't exist
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() && !parent.exists() {
-                    std::fs::create_dir_all(parent)?;
-                }
-            }
-
-            std::fs::write(path, &output_data)?;
-            Some(path_str.clone())
-        } else {
-            None
-        };
+        let output_path = self.write_output(&params.output_path, &output_data)?;
 
         Ok(SplitPdfResult {
             source: source_name,
@@ -2044,45 +2269,34 @@ impl PdfServer {
             });
         }
 
-        // Resolve all sources
+        // Resolve all sources (async)
         let mut resolved_pdfs: Vec<Vec<u8>> = Vec::new();
         for source in &params.sources {
             let resolved = self.resolve_source(source).await?;
             resolved_pdfs.push(resolved.data);
         }
 
-        // Create references for qpdf
-        let pdf_refs: Vec<&[u8]> = resolved_pdfs.iter().map(|v| v.as_slice()).collect();
-
-        // Use qpdf to merge PDFs
-        let output_data = QpdfWrapper::merge(&pdf_refs)?;
-
-        // Get page count of output PDF
-        let output_page_count = QpdfWrapper::get_page_count(&output_data, None)?;
+        let (output_data, output_page_count) = tokio::task::spawn_blocking(move || {
+            let pdf_refs: Vec<&[u8]> = resolved_pdfs.iter().map(|v| v.as_slice()).collect();
+            let output_data = QpdfWrapper::merge(&pdf_refs)?;
+            let output_page_count = QpdfWrapper::get_page_count(&output_data, None)?;
+            Ok::<_, crate::error::Error>((output_data, output_page_count))
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         // Always cache the output for chaining operations
-        let output_cache_key = CacheManager::generate_key();
-        self.cache
-            .write()
-            .await
-            .put(output_cache_key.clone(), output_data.clone());
+        let output_cache_key = {
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), output_data.clone());
+            key
+        };
 
         // Save to file if output_path is specified
-        let output_path = if let Some(ref path_str) = params.output_path {
-            let path = Path::new(path_str);
-
-            // Create parent directories if they don't exist
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() && !parent.exists() {
-                    std::fs::create_dir_all(parent)?;
-                }
-            }
-
-            std::fs::write(path, &output_data)?;
-            Some(path_str.clone())
-        } else {
-            None
-        };
+        let output_path = self.write_output(&params.output_path, &output_data)?;
 
         Ok(MergePdfsResult {
             source_count: params.sources.len() as u32,
@@ -2100,44 +2314,43 @@ impl PdfServer {
         let resolved = self.resolve_source(&params.source).await?;
         let source_name = resolved.source_name.clone();
 
-        // Use qpdf to encrypt the PDF
-        let output_data = QpdfWrapper::encrypt(
-            &resolved.data,
-            &params.user_password,
-            params.owner_password.as_deref(),
-            &params.allow_print,
-            params.allow_copy,
-            params.allow_modify,
-            params.password.as_deref(),
-        )?;
+        let data = resolved.data;
+        let user_password = params.user_password.clone();
+        let owner_password = params.owner_password.clone();
+        let allow_print = params.allow_print.clone();
+        let allow_copy = params.allow_copy;
+        let allow_modify = params.allow_modify;
+        let password = params.password.clone();
 
-        // Get page count of output PDF (need user password to open)
-        let output_page_count =
-            QpdfWrapper::get_page_count(&output_data, Some(&params.user_password))?;
+        let (output_data, output_page_count) = tokio::task::spawn_blocking(move || {
+            let output_data = QpdfWrapper::encrypt(
+                &data,
+                &user_password,
+                owner_password.as_deref(),
+                &allow_print,
+                allow_copy,
+                allow_modify,
+                password.as_deref(),
+            )?;
+            let output_page_count =
+                QpdfWrapper::get_page_count(&output_data, Some(&user_password))?;
+            Ok::<_, crate::error::Error>((output_data, output_page_count))
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         // Always cache the output for chaining operations
-        let output_cache_key = CacheManager::generate_key();
-        self.cache
-            .write()
-            .await
-            .put(output_cache_key.clone(), output_data.clone());
+        let output_cache_key = {
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), output_data.clone());
+            key
+        };
 
         // Save to file if output_path is specified
-        let output_path = if let Some(ref path_str) = params.output_path {
-            let path = Path::new(path_str);
-
-            // Create parent directories if they don't exist
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() && !parent.exists() {
-                    std::fs::create_dir_all(parent)?;
-                }
-            }
-
-            std::fs::write(path, &output_data)?;
-            Some(path_str.clone())
-        } else {
-            None
-        };
+        let output_path = self.write_output(&params.output_path, &output_data)?;
 
         Ok(ProtectPdfResult {
             source: source_name,
@@ -2155,35 +2368,29 @@ impl PdfServer {
         let resolved = self.resolve_source(&params.source).await?;
         let source_name = resolved.source_name.clone();
 
-        // Use qpdf to decrypt the PDF
-        let output_data = QpdfWrapper::decrypt(&resolved.data, &params.password)?;
+        let data = resolved.data;
+        let password = params.password.clone();
 
-        // Get page count of output PDF (no password needed now)
-        let output_page_count = QpdfWrapper::get_page_count(&output_data, None)?;
+        let (output_data, output_page_count) = tokio::task::spawn_blocking(move || {
+            let output_data = QpdfWrapper::decrypt(&data, &password)?;
+            let output_page_count = QpdfWrapper::get_page_count(&output_data, None)?;
+            Ok::<_, crate::error::Error>((output_data, output_page_count))
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         // Always cache the output for chaining operations
-        let output_cache_key = CacheManager::generate_key();
-        self.cache
-            .write()
-            .await
-            .put(output_cache_key.clone(), output_data.clone());
+        let output_cache_key = {
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), output_data.clone());
+            key
+        };
 
         // Save to file if output_path is specified
-        let output_path = if let Some(ref path_str) = params.output_path {
-            let path = Path::new(path_str);
-
-            // Create parent directories if they don't exist
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() && !parent.exists() {
-                    std::fs::create_dir_all(parent)?;
-                }
-            }
-
-            std::fs::write(path, &output_data)?;
-            Some(path_str.clone())
-        } else {
-            None
-        };
+        let output_path = self.write_output(&params.output_path, &output_data)?;
 
         Ok(UnprotectPdfResult {
             source: source_name,
@@ -2204,49 +2411,56 @@ impl PdfServer {
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
         };
 
-        // Parse page range if specified
-        let page_numbers = if let Some(ref page_range) = params.pages {
-            let reader =
-                PdfReader::open_bytes_metadata_only(&resolved.data, params.password.as_deref())?;
-            let page_count = reader.page_count();
-            Some(parse_page_range(page_range, page_count)?)
-        } else {
-            None
-        };
+        let data = resolved.data;
+        let password = params.password.clone();
+        let pages_param = params.pages.clone();
 
-        // Extract links
-        let pdf_links = extract_links(
-            &resolved.data,
-            params.password.as_deref(),
-            page_numbers.as_deref(),
-        )?;
+        let links = tokio::task::spawn_blocking(move || {
+            let page_numbers = if let Some(ref page_range) = pages_param {
+                let reader =
+                    PdfReader::open_bytes_metadata_only(&data, password.as_deref())?;
+                let page_count = reader.page_count();
+                Some(parse_page_range(page_range, page_count)?)
+            } else {
+                None
+            };
 
-        // Convert to response type
-        let links: Vec<LinkInfo> = pdf_links
-            .into_iter()
-            .map(|link| LinkInfo {
-                page: link.page,
-                url: link.url,
-                dest_page: link.dest_page,
-                bounds: link.bounds.map(|(left, top, right, bottom)| RectInfo {
-                    left,
-                    top,
-                    right,
-                    bottom,
-                }),
-                text: link.text,
-            })
-            .collect();
+            let pdf_links = extract_links(
+                &data,
+                password.as_deref(),
+                page_numbers.as_deref(),
+            )?;
+
+            let links: Vec<LinkInfo> = pdf_links
+                .into_iter()
+                .map(|link| LinkInfo {
+                    page: link.page,
+                    url: link.url,
+                    dest_page: link.dest_page,
+                    bounds: link.bounds.map(|(left, top, right, bottom)| RectInfo {
+                        left,
+                        top,
+                        right,
+                        bottom,
+                    }),
+                    text: link.text,
+                })
+                .collect();
+
+            Ok::<_, crate::error::Error>(links)
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         let total_count = links.len() as u32;
 
@@ -2269,61 +2483,70 @@ impl PdfServer {
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
         };
 
-        // Get page info
-        let page_infos = get_page_info(&resolved.data, params.password.as_deref())?;
-        let total_pages = page_infos.len() as u32;
+        let data = resolved.data;
+        let password = params.password.clone();
+        let skip_file_sizes = params.skip_file_sizes;
 
-        // Calculate file sizes by default (unless skip_file_sizes is true)
-        let file_sizes: Option<Vec<usize>> = if !params.skip_file_sizes {
-            let mut sizes = Vec::with_capacity(total_pages as usize);
-            for page_num in 1..=total_pages {
-                let page_data = QpdfWrapper::split_pages(
-                    &resolved.data,
-                    &page_num.to_string(),
-                    params.password.as_deref(),
-                )?;
-                sizes.push(page_data.len());
-            }
-            Some(sizes)
-        } else {
-            None
-        };
+        let result = tokio::task::spawn_blocking(move || {
+            let page_infos = get_page_info(&data, password.as_deref())?;
+            let total_pages = page_infos.len() as u32;
 
-        // Convert and calculate totals
-        let mut total_chars = 0usize;
-        let mut total_words = 0usize;
-        let mut total_estimated_token_count = 0usize;
-
-        let pages: Vec<PageInfo> = page_infos
-            .into_iter()
-            .enumerate()
-            .map(|(idx, info)| {
-                total_chars += info.char_count;
-                total_words += info.word_count;
-                total_estimated_token_count += info.estimated_token_count;
-                PageInfo {
-                    page: info.page,
-                    width: info.width,
-                    height: info.height,
-                    rotation: info.rotation,
-                    orientation: info.orientation,
-                    char_count: info.char_count,
-                    word_count: info.word_count,
-                    estimated_token_count: info.estimated_token_count,
-                    file_size: file_sizes.as_ref().map(|s| s[idx]),
+            let file_sizes: Option<Vec<usize>> = if !skip_file_sizes {
+                let mut sizes = Vec::with_capacity(total_pages as usize);
+                for page_num in 1..=total_pages {
+                    let page_data = QpdfWrapper::split_pages(
+                        &data,
+                        &page_num.to_string(),
+                        password.as_deref(),
+                    )?;
+                    sizes.push(page_data.len());
                 }
-            })
-            .collect();
+                Some(sizes)
+            } else {
+                None
+            };
+
+            let mut total_chars = 0usize;
+            let mut total_words = 0usize;
+            let mut total_estimated_token_count = 0usize;
+
+            let pages: Vec<PageInfo> = page_infos
+                .into_iter()
+                .enumerate()
+                .map(|(idx, info)| {
+                    total_chars += info.char_count;
+                    total_words += info.word_count;
+                    total_estimated_token_count += info.estimated_token_count;
+                    PageInfo {
+                        page: info.page,
+                        width: info.width,
+                        height: info.height,
+                        rotation: info.rotation,
+                        orientation: info.orientation,
+                        char_count: info.char_count,
+                        word_count: info.word_count,
+                        estimated_token_count: info.estimated_token_count,
+                        file_size: file_sizes.as_ref().map(|s| s[idx]),
+                    }
+                })
+                .collect();
+
+            Ok::<_, crate::error::Error>((pages, total_pages, total_chars, total_words, total_estimated_token_count))
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
+
+        let (pages, total_pages, total_chars, total_words, total_estimated_token_count) = result;
 
         Ok(GetPageInfoResult {
             source: source_name,
@@ -2345,13 +2568,25 @@ impl PdfServer {
         let source_name = resolved.source_name.clone();
         let original_size = resolved.data.len();
 
-        // Use qpdf to compress the PDF
-        let output_data = QpdfWrapper::compress(
-            &resolved.data,
-            params.password.as_deref(),
-            Some(&params.object_streams),
-            Some(params.compression_level),
-        )?;
+        let data = resolved.data;
+        let password = params.password.clone();
+        let object_streams = params.object_streams.clone();
+        let compression_level = params.compression_level;
+
+        let (output_data, output_page_count) = tokio::task::spawn_blocking(move || {
+            let output_data = QpdfWrapper::compress(
+                &data,
+                password.as_deref(),
+                Some(&object_streams),
+                Some(compression_level),
+            )?;
+            let output_page_count = QpdfWrapper::get_page_count(&output_data, None)?;
+            Ok::<_, crate::error::Error>((output_data, output_page_count))
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         let compressed_size = output_data.len();
         let compression_ratio = if original_size > 0 {
@@ -2361,32 +2596,16 @@ impl PdfServer {
         };
         let bytes_saved = original_size as i64 - compressed_size as i64;
 
-        // Get page count of output PDF
-        let output_page_count = QpdfWrapper::get_page_count(&output_data, None)?;
-
         // Always cache the output for chaining operations
-        let output_cache_key = CacheManager::generate_key();
-        self.cache
-            .write()
-            .await
-            .put(output_cache_key.clone(), output_data.clone());
+        let output_cache_key = {
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), output_data.clone());
+            key
+        };
 
         // Save to file if output_path is specified
-        let output_path = if let Some(ref path_str) = params.output_path {
-            let path = Path::new(path_str);
-
-            // Create parent directories if they don't exist
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() && !parent.exists() {
-                    std::fs::create_dir_all(parent)?;
-                }
-            }
-
-            std::fs::write(path, &output_data)?;
-            Some(path_str.clone())
-        } else {
-            None
-        };
+        let output_path = self.write_output(&params.output_path, &output_data)?;
 
         Ok(CompressPdfResult {
             source: source_name,
@@ -2406,52 +2625,86 @@ impl PdfServer {
         source: &PdfSource,
         params: &ConvertPageToImageParams,
     ) -> crate::error::Result<ConvertPageToImageResult> {
+        // Validate image rendering limits
+        if let Some(scale) = params.scale {
+            if scale <= 0.0 || scale > self.config.max_image_scale {
+                return Err(crate::error::Error::ImageDimensionExceeded {
+                    detail: format!(
+                        "scale must be between 0.0 (exclusive) and {} (inclusive), got {}",
+                        self.config.max_image_scale, scale
+                    ),
+                });
+            }
+        }
+        if let (Some(w), Some(h)) = (params.width, params.height) {
+            let pixel_area = w as u64 * h as u64;
+            if pixel_area > self.config.max_image_pixels {
+                return Err(crate::error::Error::ImageDimensionExceeded {
+                    detail: format!(
+                        "pixel area {}x{} = {} exceeds maximum {} pixels",
+                        w, h, pixel_area, self.config.max_image_pixels
+                    ),
+                });
+            }
+        }
+
         let resolved = self.resolve_source(source).await?;
         let source_name = resolved.source_name.clone();
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
         };
 
-        // Determine pages to render
-        let reader =
-            PdfReader::open_bytes_metadata_only(&resolved.data, params.password.as_deref())?;
-        let page_count = reader.page_count();
+        let data = resolved.data;
+        let password = params.password.clone();
+        let pages_param = params.pages.clone();
+        let width = params.width;
+        let height = params.height;
+        let scale = params.scale;
 
-        let page_numbers = if let Some(ref page_range) = params.pages {
-            parse_page_range(page_range, page_count)?
-        } else {
-            (1..=page_count).collect()
-        };
+        let pages = tokio::task::spawn_blocking(move || {
+            let reader =
+                PdfReader::open_bytes_metadata_only(&data, password.as_deref())?;
+            let page_count = reader.page_count();
 
-        // Render pages
-        let rendered = render_pages_to_images(
-            &resolved.data,
-            params.password.as_deref(),
-            &page_numbers,
-            params.width,
-            params.height,
-            params.scale,
-        )?;
+            let page_numbers = if let Some(ref page_range) = pages_param {
+                parse_page_range(page_range, page_count)?
+            } else {
+                (1..=page_count).collect()
+            };
 
-        let pages = rendered
-            .into_iter()
-            .map(|rp| RenderedPageInfo {
-                page: rp.page,
-                width: rp.width,
-                height: rp.height,
-                data_base64: rp.data_base64,
-                mime_type: rp.mime_type,
-            })
-            .collect();
+            let rendered = render_pages_to_images(
+                &data,
+                password.as_deref(),
+                &page_numbers,
+                width,
+                height,
+                scale,
+            )?;
+
+            let pages: Vec<RenderedPageInfo> = rendered
+                .into_iter()
+                .map(|rp| RenderedPageInfo {
+                    page: rp.page,
+                    width: rp.width,
+                    height: rp.height,
+                    data_base64: rp.data_base64,
+                    mime_type: rp.mime_type,
+                })
+                .collect();
+
+            Ok::<_, crate::error::Error>(pages)
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
 
         Ok(ConvertPageToImageResult {
             source: source_name,
@@ -2471,61 +2724,69 @@ impl PdfServer {
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
         };
 
-        // Parse page range if specified
-        let page_numbers = if let Some(ref page_range) = params.pages {
-            let reader =
-                PdfReader::open_bytes_metadata_only(&resolved.data, params.password.as_deref())?;
-            let page_count = reader.page_count();
-            Some(parse_page_range(page_range, page_count)?)
-        } else {
-            None
-        };
+        let data = resolved.data;
+        let password = params.password.clone();
+        let pages_param = params.pages.clone();
 
-        // Extract form fields
-        let pdf_fields = extract_form_fields(
-            &resolved.data,
-            params.password.as_deref(),
-            page_numbers.as_deref(),
-        )?;
+        let fields = tokio::task::spawn_blocking(move || {
+            let page_numbers = if let Some(ref page_range) = pages_param {
+                let reader =
+                    PdfReader::open_bytes_metadata_only(&data, password.as_deref())?;
+                let page_count = reader.page_count();
+                Some(parse_page_range(page_range, page_count)?)
+            } else {
+                None
+            };
 
-        let total_fields = pdf_fields.len();
+            let pdf_fields = extract_form_fields(
+                &data,
+                password.as_deref(),
+                page_numbers.as_deref(),
+            )?;
 
-        let fields: Vec<FormFieldInfoResponse> = pdf_fields
-            .into_iter()
-            .map(|f| FormFieldInfoResponse {
-                page: f.page,
-                name: f.name,
-                field_type: f.field_type,
-                value: f.value,
-                is_checked: f.is_checked,
-                is_read_only: f.is_read_only,
-                is_required: f.is_required,
-                options: f.options.map(|opts| {
-                    opts.into_iter()
-                        .map(|o| FormFieldOptionInfoResponse {
-                            label: o.label,
-                            is_selected: o.is_selected,
-                        })
-                        .collect()
-                }),
-                properties: FormFieldPropertiesResponse {
-                    is_multiline: f.properties.is_multiline,
-                    is_password: f.properties.is_password,
-                    is_editable: f.properties.is_editable,
-                    is_multiselect: f.properties.is_multiselect,
-                },
-            })
-            .collect();
+            let fields: Vec<FormFieldInfoResponse> = pdf_fields
+                .into_iter()
+                .map(|f| FormFieldInfoResponse {
+                    page: f.page,
+                    name: f.name,
+                    field_type: f.field_type,
+                    value: f.value,
+                    is_checked: f.is_checked,
+                    is_read_only: f.is_read_only,
+                    is_required: f.is_required,
+                    options: f.options.map(|opts| {
+                        opts.into_iter()
+                            .map(|o| FormFieldOptionInfoResponse {
+                                label: o.label,
+                                is_selected: o.is_selected,
+                            })
+                            .collect()
+                    }),
+                    properties: FormFieldPropertiesResponse {
+                        is_multiline: f.properties.is_multiline,
+                        is_password: f.properties.is_password,
+                        is_editable: f.properties.is_editable,
+                        is_multiselect: f.properties.is_multiselect,
+                    },
+                })
+                .collect();
+
+            Ok::<_, crate::error::Error>(fields)
+        })
+        .await
+        .map_err(|e| crate::error::Error::Pdfium {
+            reason: format!("Task join error: {}", e),
+        })??;
+
+        let total_fields = fields.len();
 
         Ok(ExtractFormFieldsResult {
             source: source_name,
@@ -2554,37 +2815,34 @@ impl PdfServer {
             })
             .collect();
 
-        // Fill form fields
-        let (output_data, fill_result) =
-            fill_form_fields(&resolved.data, params.password.as_deref(), &field_values)?;
+        let data = resolved.data;
+        let password = params.password.clone();
 
-        // Get page count of output PDF
-        let output_page_count = PdfReader::open_bytes_metadata_only(&output_data, None)
-            .map(|r| r.page_count())
-            .unwrap_or(0);
+        // Fill form fields and get page count — CPU-bound PDFium work
+        let (output_data, fill_result, output_page_count) =
+            tokio::task::spawn_blocking(move || {
+                let (output_data, fill_result) =
+                    fill_form_fields(&data, password.as_deref(), &field_values)?;
+                let output_page_count = PdfReader::open_bytes_metadata_only(&output_data, None)
+                    .map(|r| r.page_count())
+                    .unwrap_or(0);
+                Ok::<_, crate::error::Error>((output_data, fill_result, output_page_count))
+            })
+            .await
+            .map_err(|e| crate::error::Error::Pdfium {
+                reason: format!("Task join error: {}", e),
+            })??;
 
         // Always cache the output for chaining operations
-        let output_cache_key = CacheManager::generate_key();
-        self.cache
-            .write()
-            .await
-            .put(output_cache_key.clone(), output_data.clone());
+        let output_cache_key = {
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), output_data.clone());
+            key
+        };
 
         // Save to file if output_path is specified
-        let output_path = if let Some(ref path_str) = params.output_path {
-            let path = Path::new(path_str);
-
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() && !parent.exists() {
-                    std::fs::create_dir_all(parent)?;
-                }
-            }
-
-            std::fs::write(path, &output_data)?;
-            Some(path_str.clone())
-        } else {
-            None
-        };
+        let output_path = self.write_output(&params.output_path, &output_data)?;
 
         let fields_skipped = fill_result
             .fields_skipped
@@ -2617,11 +2875,9 @@ impl PdfServer {
 
         // Cache if requested
         let cache_key = if params.cache {
-            let key = CacheManager::generate_key();
-            self.cache
-                .write()
-                .await
-                .put(key.clone(), resolved.data.clone());
+            let cache_guard = self.cache.write().await;
+            let key = cache_guard.generate_unique_key();
+            cache_guard.put(key.clone(), resolved.data.clone());
             Some(key)
         } else {
             None
@@ -2630,67 +2886,86 @@ impl PdfServer {
         // Check if encrypted (try opening without password first)
         let is_encrypted = params.password.is_some();
 
-        // Open PDF with PdfReader to get metadata and outline, then drop to free PDFium
-        let (page_count, metadata, has_outline, outline_items) = {
-            let reader = PdfReader::open_bytes(&resolved.data, params.password.as_deref())?;
-            let page_count = reader.page_count();
-            let meta = reader.metadata();
-            let metadata = Some(PdfMetadata {
-                title: meta.title.clone(),
-                author: meta.author.clone(),
-                subject: meta.subject.clone(),
-                creator: meta.creator.clone(),
-                producer: meta.producer.clone(),
-                creation_date: meta.creation_date.clone(),
-                modification_date: meta.modification_date.clone(),
-                page_count,
-            });
-            let outline = reader.get_outline();
-            let has_outline = !outline.is_empty();
-            let outline_items = Self::count_outline_items(&outline);
-            (page_count, metadata, has_outline, outline_items)
-        }; // reader dropped here, PDFium library freed
+        let data = resolved.data;
+        let password = params.password.clone();
 
-        // Get page info — includes dimensions, content stats, image/annotation/link/form counts
-        // All gathered in a single PDFium load to avoid SIGSEGV from multiple library loads
-        let page_infos = get_page_info(&resolved.data, params.password.as_deref())?;
+        // All PDFium/qpdf CPU-bound work in spawn_blocking
+        let (page_count, metadata, has_outline, outline_items, page_summaries,
+             total_chars, total_words, total_estimated_tokens, total_images,
+             total_links, total_annotations, total_form_fields, form_field_types) =
+            tokio::task::spawn_blocking(move || {
+                // Open PDF with PdfReader to get metadata and outline, then drop to free PDFium
+                let (page_count, metadata, has_outline, outline_items) = {
+                    let reader = PdfReader::open_bytes(&data, password.as_deref())?;
+                    let page_count = reader.page_count();
+                    let meta = reader.metadata();
+                    let metadata = Some(PdfMetadata {
+                        title: meta.title.clone(),
+                        author: meta.author.clone(),
+                        subject: meta.subject.clone(),
+                        creator: meta.creator.clone(),
+                        producer: meta.producer.clone(),
+                        creation_date: meta.creation_date.clone(),
+                        modification_date: meta.modification_date.clone(),
+                        page_count,
+                    });
+                    let outline = reader.get_outline();
+                    let has_outline = !outline.is_empty();
+                    let outline_items = Self::count_outline_items(&outline);
+                    (page_count, metadata, has_outline, outline_items)
+                }; // reader dropped here, PDFium library freed
 
-        // Build per-page summaries and aggregate totals
-        let mut total_chars = 0usize;
-        let mut total_words = 0usize;
-        let mut total_estimated_tokens = 0usize;
-        let mut total_images = 0u32;
-        let mut total_links = 0u32;
-        let mut total_annotations = 0u32;
-        let mut total_form_fields = 0u32;
-        let mut form_field_types: HashMap<String, u32> = HashMap::new();
+                // Get page info — includes dimensions, content stats, image/annotation/link/form counts
+                // All gathered in a single PDFium load to avoid SIGSEGV from multiple library loads
+                let page_infos = get_page_info(&data, password.as_deref())?;
 
-        let mut page_summaries = Vec::with_capacity(page_count as usize);
+                // Build per-page summaries and aggregate totals
+                let mut total_chars = 0usize;
+                let mut total_words = 0usize;
+                let mut total_estimated_tokens = 0usize;
+                let mut total_images = 0u32;
+                let mut total_links = 0u32;
+                let mut total_annotations = 0u32;
+                let mut total_form_fields = 0u32;
+                let mut form_field_types: HashMap<String, u32> = HashMap::new();
 
-        for info in &page_infos {
-            total_chars += info.char_count;
-            total_words += info.word_count;
-            total_estimated_tokens += info.estimated_token_count;
-            total_images += info.image_count as u32;
-            total_links += info.link_count as u32;
-            total_annotations += info.annotation_count as u32;
-            total_form_fields += info.form_field_count as u32;
+                let mut page_summaries = Vec::with_capacity(page_count as usize);
 
-            for ft in &info.form_field_types {
-                *form_field_types.entry(ft.clone()).or_insert(0) += 1;
-            }
+                for info in &page_infos {
+                    total_chars += info.char_count;
+                    total_words += info.word_count;
+                    total_estimated_tokens += info.estimated_token_count;
+                    total_images += info.image_count as u32;
+                    total_links += info.link_count as u32;
+                    total_annotations += info.annotation_count as u32;
+                    total_form_fields += info.form_field_count as u32;
 
-            page_summaries.push(PageSummary {
-                page: info.page,
-                width: info.width,
-                height: info.height,
-                char_count: info.char_count,
-                word_count: info.word_count,
-                has_images: info.image_count > 0,
-                has_links: info.link_count > 0,
-                has_annotations: info.annotation_count > 0,
-            });
-        }
+                    for ft in &info.form_field_types {
+                        *form_field_types.entry(ft.clone()).or_insert(0) += 1;
+                    }
+
+                    page_summaries.push(PageSummary {
+                        page: info.page,
+                        width: info.width,
+                        height: info.height,
+                        char_count: info.char_count,
+                        word_count: info.word_count,
+                        has_images: info.image_count > 0,
+                        has_links: info.link_count > 0,
+                        has_annotations: info.annotation_count > 0,
+                    });
+                }
+
+                Ok::<_, crate::error::Error>((
+                    page_count, metadata, has_outline, outline_items, page_summaries,
+                    total_chars, total_words, total_estimated_tokens, total_images,
+                    total_links, total_annotations, total_form_fields, form_field_types,
+                ))
+            })
+            .await
+            .map_err(|e| crate::error::Error::Pdfium {
+                reason: format!("Task join error: {}", e),
+            })??;
 
         let has_form = total_form_fields > 0;
         let form_field_count = total_form_fields;
@@ -2728,12 +3003,32 @@ impl PdfServer {
 
     /// List PDF files in a directory (public for testing)
     pub fn process_list_pdfs_public(
+        &self,
         params: &ListPdfsParams,
     ) -> crate::error::Result<ListPdfsResult> {
-        Self::process_list_pdfs(params)
+        self.process_list_pdfs(params)
     }
 
-    fn process_list_pdfs(params: &ListPdfsParams) -> crate::error::Result<ListPdfsResult> {
+    fn process_list_pdfs(&self, params: &ListPdfsParams) -> crate::error::Result<ListPdfsResult> {
+        // Sandbox check: if resource_dirs are configured, directory must be within them
+        if !self.config.resource_dirs.is_empty() {
+            let canonical = std::fs::canonicalize(&params.directory).map_err(|_| {
+                crate::error::Error::PathAccessDenied {
+                    path: params.directory.clone(),
+                }
+            })?;
+            let allowed = self.config.resource_dirs.iter().any(|dir| {
+                std::fs::canonicalize(dir)
+                    .map(|cd| canonical.starts_with(&cd))
+                    .unwrap_or(false)
+            });
+            if !allowed {
+                return Err(crate::error::Error::PathAccessDenied {
+                    path: params.directory.clone(),
+                });
+            }
+        }
+
         let dir_path = Path::new(&params.directory);
 
         if !dir_path.exists() {
@@ -2868,14 +3163,14 @@ impl ServerHandler for PdfServer {
     ) -> Result<ListResourcesResult, ErrorData> {
         let mut resources = Vec::new();
 
-        for dir in self.resource_dirs.iter() {
+        for dir in self.config.resource_dirs.iter() {
             let params = ListPdfsParams {
                 directory: dir.clone(),
                 recursive: true,
                 pattern: None,
             };
 
-            if let Ok(list_result) = Self::process_list_pdfs_public(&params) {
+            if let Ok(list_result) = self.process_list_pdfs_public(&params) {
                 for file in list_result.files {
                     let uri = format!("file://{}", file.path);
                     let mut resource = RawResource::new(uri.clone(), file.name.clone());
@@ -2923,14 +3218,20 @@ impl ServerHandler for PdfServer {
             ));
         };
 
-        // Check if the path is within a configured resource directory
-        let path_obj = std::path::Path::new(path);
-        let is_allowed = self.resource_dirs.iter().any(|dir| {
-            let dir_path = std::path::Path::new(dir);
-            path_obj.starts_with(dir_path)
-        });
+        // Check if the path is within a configured resource directory (using canonicalize to prevent traversal)
+        let is_allowed = if self.config.resource_dirs.is_empty() {
+            true
+        } else if let Ok(canonical_path) = std::fs::canonicalize(path) {
+            self.config.resource_dirs.iter().any(|dir| {
+                std::fs::canonicalize(dir)
+                    .map(|cd| canonical_path.starts_with(&cd))
+                    .unwrap_or(false)
+            })
+        } else {
+            false
+        };
 
-        if !is_allowed && !self.resource_dirs.is_empty() {
+        if !is_allowed {
             return Err(ErrorData::invalid_params(
                 "Resource not found in configured directories",
                 None,
@@ -2974,19 +3275,31 @@ impl ServerHandler for PdfServer {
                     }],
                 })
             }
-            Err(e) => Err(ErrorData::internal_error(e.to_string(), None)),
+            Err(e) => {
+                tracing::warn!(error = %e, "read_resource failed");
+                Err(ErrorData::internal_error(e.client_message(), None))
+            }
         }
     }
 }
 
 /// Run the MCP server without resource directories
 pub async fn run_server() -> Result<()> {
-    run_server_with_dirs(Vec::new()).await
+    run_server_with_config(ServerConfig::default()).await
 }
 
 /// Run the MCP server with specified resource directories
 pub async fn run_server_with_dirs(resource_dirs: Vec<String>) -> Result<()> {
-    let server = PdfServer::with_resource_dirs(resource_dirs);
+    run_server_with_config(ServerConfig {
+        resource_dirs,
+        ..ServerConfig::default()
+    })
+    .await
+}
+
+/// Run the MCP server with full configuration
+pub async fn run_server_with_config(config: ServerConfig) -> Result<()> {
+    let server = PdfServer::with_config(config);
 
     tracing::info!("PDF MCP Server ready, waiting for connections...");
 
@@ -3541,5 +3854,296 @@ mod tests {
         let server = PdfServer::default();
         // Just verify it doesn't panic
         let _ = server;
+    }
+
+    // ========================================================================
+    // Path sandboxing tests
+    // ========================================================================
+
+    #[test]
+    fn test_validate_path_no_resource_dirs_allows_all() {
+        let server = PdfServer::new();
+        // No resource_dirs → all paths allowed
+        let result = server.validate_path_access(
+            &fixture_path("dummy.pdf").to_string_lossy(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_within_resource_dir() {
+        let fixtures_dir = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("tests/fixtures");
+            p
+        };
+        let server = PdfServer::with_config(ServerConfig {
+            resource_dirs: vec![fixtures_dir.to_string_lossy().to_string()],
+            ..ServerConfig::default()
+        });
+        let result = server.validate_path_access(
+            &fixture_path("dummy.pdf").to_string_lossy(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_outside_resource_dir_denied() {
+        let fixtures_dir = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("tests/fixtures");
+            p
+        };
+        let server = PdfServer::with_config(ServerConfig {
+            resource_dirs: vec![fixtures_dir.to_string_lossy().to_string()],
+            ..ServerConfig::default()
+        });
+        // Cargo.toml is outside tests/fixtures
+        let cargo_toml = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("Cargo.toml");
+            p
+        };
+        let result = server.validate_path_access(&cargo_toml.to_string_lossy());
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::PathAccessDenied { .. })
+        ));
+    }
+
+    #[test]
+    fn test_validate_path_traversal_denied() {
+        let fixtures_dir = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("tests/fixtures");
+            p
+        };
+        let server = PdfServer::with_config(ServerConfig {
+            resource_dirs: vec![fixtures_dir.to_string_lossy().to_string()],
+            ..ServerConfig::default()
+        });
+        // Attempt path traversal
+        let traversal = format!(
+            "{}/../../Cargo.toml",
+            fixtures_dir.to_string_lossy()
+        );
+        let result = server.validate_path_access(&traversal);
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::PathAccessDenied { .. })
+        ));
+    }
+
+    #[test]
+    fn test_validate_output_path_within_resource_dir() {
+        let fixtures_dir = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("tests/fixtures");
+            p
+        };
+        let server = PdfServer::with_config(ServerConfig {
+            resource_dirs: vec![fixtures_dir.to_string_lossy().to_string()],
+            ..ServerConfig::default()
+        });
+        let output = format!("{}/output.pdf", fixtures_dir.to_string_lossy());
+        let result = server.validate_output_path_access(&output);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_output_path_outside_denied() {
+        let fixtures_dir = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("tests/fixtures");
+            p
+        };
+        let server = PdfServer::with_config(ServerConfig {
+            resource_dirs: vec![fixtures_dir.to_string_lossy().to_string()],
+            ..ServerConfig::default()
+        });
+        let result = server.validate_output_path_access("/tmp/evil.pdf");
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::PathAccessDenied { .. })
+        ));
+    }
+
+    // ========================================================================
+    // Image rendering limit tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_image_scale_too_large() {
+        let server = PdfServer::new();
+        let source = PdfSource::Path {
+            path: fixture_path("dummy.pdf").to_string_lossy().to_string(),
+        };
+        let params = ConvertPageToImageParams {
+            sources: vec![source.clone()],
+            pages: Some("1".to_string()),
+            width: None,
+            height: None,
+            scale: Some(999.0),
+            password: None,
+            cache: false,
+        };
+        let result = server.process_convert_page_to_image(&source, &params).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::ImageDimensionExceeded { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_image_scale_zero() {
+        let server = PdfServer::new();
+        let source = PdfSource::Path {
+            path: fixture_path("dummy.pdf").to_string_lossy().to_string(),
+        };
+        let params = ConvertPageToImageParams {
+            sources: vec![source.clone()],
+            pages: Some("1".to_string()),
+            width: None,
+            height: None,
+            scale: Some(0.0),
+            password: None,
+            cache: false,
+        };
+        let result = server.process_convert_page_to_image(&source, &params).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::ImageDimensionExceeded { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_image_pixel_area_too_large() {
+        let server = PdfServer::new();
+        let source = PdfSource::Path {
+            path: fixture_path("dummy.pdf").to_string_lossy().to_string(),
+        };
+        let params = ConvertPageToImageParams {
+            sources: vec![source.clone()],
+            pages: Some("1".to_string()),
+            width: Some(50000),
+            height: Some(50000),
+            scale: None,
+            password: None,
+            cache: false,
+        };
+        let result = server.process_convert_page_to_image(&source, &params).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::ImageDimensionExceeded { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_image_valid_scale() {
+        let server = PdfServer::new();
+        let source = PdfSource::Path {
+            path: fixture_path("dummy.pdf").to_string_lossy().to_string(),
+        };
+        let params = ConvertPageToImageParams {
+            sources: vec![source.clone()],
+            pages: Some("1".to_string()),
+            width: None,
+            height: None,
+            scale: Some(1.0),
+            password: None,
+            cache: false,
+        };
+        let result = server.process_convert_page_to_image(&source, &params).await;
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // list_pdfs sandboxing tests
+    // ========================================================================
+
+    #[test]
+    fn test_list_pdfs_sandbox_allowed() {
+        let fixtures_dir = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("tests/fixtures");
+            p
+        };
+        let server = PdfServer::with_config(ServerConfig {
+            resource_dirs: vec![fixtures_dir.to_string_lossy().to_string()],
+            ..ServerConfig::default()
+        });
+        let params = ListPdfsParams {
+            directory: fixtures_dir.to_string_lossy().to_string(),
+            recursive: false,
+            pattern: None,
+        };
+        let result = server.process_list_pdfs(&params);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_list_pdfs_sandbox_denied() {
+        let fixtures_dir = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("tests/fixtures");
+            p
+        };
+        let server = PdfServer::with_config(ServerConfig {
+            resource_dirs: vec![fixtures_dir.to_string_lossy().to_string()],
+            ..ServerConfig::default()
+        });
+        let params = ListPdfsParams {
+            directory: "/tmp".to_string(),
+            recursive: false,
+            pattern: None,
+        };
+        let result = server.process_list_pdfs(&params);
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::PathAccessDenied { .. })
+        ));
+    }
+
+    // ========================================================================
+    // ServerConfig tests
+    // ========================================================================
+
+    #[test]
+    fn test_server_config_default() {
+        let config = ServerConfig::default();
+        assert!(config.resource_dirs.is_empty());
+        assert!(!config.allow_private_urls);
+        assert_eq!(config.max_download_bytes, 100 * 1024 * 1024);
+        assert_eq!(config.cache_max_bytes, 512 * 1024 * 1024);
+        assert_eq!(config.cache_max_entries, 100);
+        assert_eq!(config.max_image_scale, 10.0);
+        assert_eq!(config.max_image_pixels, 100_000_000);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_source_path_sandboxed_denied() {
+        let fixtures_dir = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("tests/fixtures");
+            p
+        };
+        let server = PdfServer::with_config(ServerConfig {
+            resource_dirs: vec![fixtures_dir.to_string_lossy().to_string()],
+            ..ServerConfig::default()
+        });
+        // Try to access a file outside the sandbox
+        let cargo_toml = {
+            let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("Cargo.toml");
+            p
+        };
+        let source = PdfSource::Path {
+            path: cargo_toml.to_string_lossy().to_string(),
+        };
+        let result = server.resolve_source(&source).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::PathAccessDenied { .. })
+        ));
     }
 }

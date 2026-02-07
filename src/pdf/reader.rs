@@ -78,16 +78,25 @@ impl Default for TextExtractionConfig {
 
 /// Get PDFium instance (creates new instance each time - PDFium is not thread-safe)
 fn create_pdfium() -> Result<Pdfium> {
-    // Try to bind to system library or use static linking
-    let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-        .or_else(|_| {
+    // Try PDFIUM_PATH env var first (explicit user override)
+    let bindings = std::env::var("PDFIUM_PATH")
+        .ok()
+        .and_then(|p| {
+            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&p)).ok()
+        })
+        // Then hardcoded Docker/production path
+        .or_else(|| {
             Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
                 "/opt/pdfium/lib",
             ))
+            .ok()
         })
-        .or_else(|_| Pdfium::bind_to_system_library())
-        .map_err(|e| Error::Pdfium {
-            reason: format!("Failed to initialize PDFium: {}", e),
+        // Then system library (ld.so / dyld paths)
+        .or_else(|| Pdfium::bind_to_system_library().ok())
+        .ok_or_else(|| Error::Pdfium {
+            reason: "Failed to initialize PDFium: no library found. \
+                     Set PDFIUM_PATH to the directory containing the PDFium library."
+                .to_string(),
         })?;
 
     Ok(Pdfium::new(bindings))
