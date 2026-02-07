@@ -777,6 +777,30 @@ block-beta
   server --> common --> pdf
 ```
 
+## ⚡ Performance
+
+Benchmarked with a 14-page technical paper (tracemonkey.pdf, ~1 MB) on Docker (Apple Silicon):
+
+| Operation | Time | What it means |
+|-----------|------|---------------|
+| **Extract text** (14 pages) | 170 ms | Process ~80 documents per minute |
+| **Metadata only** | 0.26 ms | ~4,000 documents per second |
+| **Search** | 0.01 ms | Instant results on extracted text |
+| **100 files batch** | 4.8 s | ~21 documents per second |
+
+### Key takeaways
+
+- **Fast enough for interactive use** — Text extraction completes in under 200ms
+- **Metadata is nearly instant** — Use `extract_metadata` or `summarize_structure` to quickly assess documents before full processing
+- **Search is blazing fast** — Once text is extracted, searching is essentially free
+- **Batch processing scales linearly** — No significant overhead when processing many files
+
+Run benchmarks yourself:
+
+```bash
+docker compose --profile dev run --rm bench
+```
+
 ## 🧑‍💻 Development
 
 <details>

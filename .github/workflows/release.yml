@@ -239,17 +239,20 @@ jobs:
       - name: Publish to MCP Registry
         run: ./mcp-publisher publish
 
-  # Publish npm wrapper package
+  # Publish npm wrapper package (Trusted Publishing via OIDC - no NPM_TOKEN needed)
   publish-npm:
     name: Publish npm Package
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download all artifacts
@@ -257,12 +260,13 @@ jobs:
         with:
           path: npm/binaries
 
-      - name: Prepare npm package
+      - name: Copy README from repo root
+        run: cp README.md npm/README.md
+
+      - name: Prepare and publish npm package
         working-directory: npm
         run: |
           # Extract version from tag (remove 'v' prefix)
           VERSION="${GITHUB_REF_NAME#v}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version || true
-          npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          npm publish --provenance --access public

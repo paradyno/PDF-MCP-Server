@@ -7,11 +7,11 @@
     "url": "https://github.com/paradyno/PDF-MCP-Server",
     "source": "github"
   },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/paradyno/pdf-mcp-server:0.1.0",
+      "identifier": "ghcr.io/paradyno/pdf-mcp-server:0.1.1",
       "transport": {
         "type": "stdio"
       }

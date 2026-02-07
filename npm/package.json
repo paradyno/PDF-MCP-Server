@@ -1,6 +1,6 @@
 {
   "name": "@paradyno/pdf-mcp-server",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "MCP server for PDF processing - text extraction, search, and outline extraction",
   "license": "Apache-2.0",
   "repository": {
