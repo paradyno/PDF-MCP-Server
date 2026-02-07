@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// PDF source specification
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum PdfSource {
     /// File path (absolute or relative)
@@ -44,6 +44,75 @@ pub enum PdfSource {
         /// Cache key from previous operation
         cache_key: String,
     },
+}
+
+impl<'de> serde::Deserialize<'de> for PdfSource {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        if let Some(obj) = value.as_object() {
+            if let Some(v) = obj.get("path") {
+                if let Some(s) = v.as_str() {
+                    return Ok(PdfSource::Path {
+                        path: s.to_string(),
+                    });
+                }
+                return Err(serde::de::Error::custom(
+                    "\"path\" must be a string",
+                ));
+            }
+            if let Some(v) = obj.get("base64") {
+                if let Some(s) = v.as_str() {
+                    return Ok(PdfSource::Base64 {
+                        base64: s.to_string(),
+                    });
+                }
+                return Err(serde::de::Error::custom(
+                    "\"base64\" must be a string",
+                ));
+            }
+            if let Some(v) = obj.get("url") {
+                if let Some(s) = v.as_str() {
+                    return Ok(PdfSource::Url {
+                        url: s.to_string(),
+                    });
+                }
+                return Err(serde::de::Error::custom(
+                    "\"url\" must be a string",
+                ));
+            }
+            if let Some(v) = obj.get("cache_key") {
+                if let Some(s) = v.as_str() {
+                    return Ok(PdfSource::CacheRef {
+                        cache_key: s.to_string(),
+                    });
+                }
+                return Err(serde::de::Error::custom(
+                    "\"cache_key\" must be a string",
+                ));
+            }
+            let keys: Vec<&String> = obj.keys().collect();
+            Err(serde::de::Error::custom(format!(
+                "Invalid source: expected an object with one of \"path\", \"base64\", \"url\", or \"cache_key\", but got keys: {:?}",
+                keys
+            )))
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "Invalid source: expected an object with one of \"path\", \"base64\", \"url\", or \"cache_key\", but got {}",
+                match &value {
+                    serde_json::Value::Array(_) => "an array",
+                    serde_json::Value::String(_) => "a string",
+                    serde_json::Value::Number(_) => "a number",
+                    serde_json::Value::Bool(_) => "a boolean",
+                    serde_json::Value::Null => "null",
+                    _ => "unknown type",
+                }
+            )))
+        }
+    }
 }
 
 /// PDF MCP Server
@@ -999,7 +1068,9 @@ impl PdfServer {
 
     /// Extract text content from PDF files
     #[tool(
-        description = "Extract text content from PDF files. Supports page selection, metadata extraction, and batch processing of multiple PDFs."
+        description = "Extract text content from PDF files. Supports page selection, metadata extraction, and batch processing of multiple PDFs.
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn extract_text(&self, Parameters(params): Parameters<ExtractTextParams>) -> String {
         let mut results = Vec::new();
@@ -1025,7 +1096,9 @@ impl PdfServer {
 
     /// Extract PDF bookmarks/table of contents
     #[tool(
-        description = "Extract PDF bookmarks/table of contents with page numbers and hierarchy."
+        description = "Extract PDF bookmarks/table of contents with page numbers and hierarchy.
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn extract_outline(
         &self,
@@ -1052,7 +1125,9 @@ impl PdfServer {
 
     /// Search for text within PDF files
     #[tool(
-        description = "Search for text within PDF files. Returns matching text with context and page locations."
+        description = "Search for text within PDF files. Returns matching text with context and page locations.
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn search(&self, Parameters(params): Parameters<SearchParams>) -> String {
         let mut results = Vec::new();
@@ -1077,7 +1152,9 @@ impl PdfServer {
 
     /// Extract PDF metadata without loading full content
     #[tool(
-        description = "Extract PDF metadata (author, title, creation date, page count, etc.) without loading full content. Fast operation for getting document information."
+        description = "Extract PDF metadata (author, title, creation date, page count, etc.) without loading full content. Fast operation for getting document information.
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn extract_metadata(
         &self,
@@ -1111,7 +1188,9 @@ impl PdfServer {
 
     /// Extract annotations from PDF files
     #[tool(
-        description = "Extract annotations (highlights, comments, underlines, etc.) from PDF files. Returns annotation content, author, dates, and highlighted text."
+        description = "Extract annotations (highlights, comments, underlines, etc.) from PDF files. Returns annotation content, author, dates, and highlighted text.
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn extract_annotations(
         &self,
@@ -1147,7 +1226,9 @@ Page range syntax:
 - Reverse: \"z-1\" (all pages reversed), \"5-1\" (pages 5 to 1)
 - Odd/even: \"1-z:odd\" (all odd pages), \"1-z:even\" (all even pages)
 - Exclude: \"1-10,x5\" (1-10 except 5), \"1-z,x5-10\" (all except 5-10)
-- Duplicate: \"1,1,1\" (page 1 three times)"
+- Duplicate: \"1,1,1\" (page 1 three times)
+
+Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn split_pdf(&self, Parameters(params): Parameters<SplitPdfParams>) -> String {
         let result = self
@@ -1172,7 +1253,9 @@ Page range syntax:
 Example use cases:
 - Combine multiple invoices into one document
 - Merge chapters into a complete book
-- Consolidate scanned pages into a single file"
+- Consolidate scanned pages into a single file
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn merge_pdfs(&self, Parameters(params): Parameters<MergePdfsParams>) -> String {
         let result = self
@@ -1201,7 +1284,9 @@ Features:
 - Control copy permission (text/image extraction)
 - Control modify permission (document editing)
 
-The output is always cached (output_cache_key) for chaining with other tools."
+The output is always cached (output_cache_key) for chaining with other tools.
+
+Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn protect_pdf(&self, Parameters(params): Parameters<ProtectPdfParams>) -> String {
         let result = self
@@ -1223,7 +1308,9 @@ The output is always cached (output_cache_key) for chaining with other tools."
     #[tool(
         description = "Remove password protection from an encrypted PDF. Requires the correct password.
 
-The output is always cached (output_cache_key) for chaining with other tools."
+The output is always cached (output_cache_key) for chaining with other tools.
+
+Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn unprotect_pdf(&self, Parameters(params): Parameters<UnprotectPdfParams>) -> String {
         let result = self
@@ -1249,7 +1336,9 @@ Returns for each link:
 - URL (for external links)
 - Destination page (for internal links)
 - Link text (if extractable from the link area)
-- Bounding rectangle"
+- Bounding rectangle
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn extract_links(&self, Parameters(params): Parameters<ExtractLinksParams>) -> String {
         let mut results = Vec::new();
@@ -1289,7 +1378,9 @@ Token counts are approximate and vary by model (GPT, Claude, etc.):
 - CJK (Chinese/Japanese/Korean): ~2 tokens per character
 Use as rough guidance for context window planning only.
 
-Also returns totals across all pages for context planning."
+Also returns totals across all pages for context planning.
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn get_page_info(&self, Parameters(params): Parameters<GetPageInfoParams>) -> String {
         let mut results = Vec::new();
@@ -1323,7 +1414,9 @@ Compression options:
 - object_streams: \"generate\" (best compression), \"preserve\", or \"disable\"
 - compression_level: 1-9 (higher = better compression but slower)
 
-The output is always cached (output_cache_key) for chaining with other tools."
+The output is always cached (output_cache_key) for chaining with other tools.
+
+Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn compress_pdf(&self, Parameters(params): Parameters<CompressPdfParams>) -> String {
         let result = self
@@ -1354,7 +1447,9 @@ Options:
 - height: Target height in pixels.
 - scale: Scale factor relative to PDF page size (e.g., 2.0). Overrides width/height.
 
-Returns base64-encoded PNG data per page, suitable for direct use with Vision models."
+Returns base64-encoded PNG data per page, suitable for direct use with Vision models.
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn convert_page_to_image(
         &self,
@@ -1392,7 +1487,9 @@ Supported field types:
 - push_button: Button fields
 - signature: Digital signature fields
 
-Useful for understanding PDF forms before filling them with fill_form."
+Useful for understanding PDF forms before filling them with fill_form.
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn extract_form_fields(
         &self,
@@ -1431,7 +1528,9 @@ Limitations:
 - ComboBox/ListBox selection is not supported (read-only via extract_form_fields)
 - Fields are matched by name; unmatched fields are reported as skipped
 
-The output is always cached (output_cache_key) for chaining with other tools."
+The output is always cached (output_cache_key) for chaining with other tools.
+
+Source format: must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn fill_form(&self, Parameters(params): Parameters<FillFormParams>) -> String {
         let result = self
@@ -1463,7 +1562,9 @@ Returns:
 - Form info: field count and types
 - Security: encryption status
 
-Use this as a first step to understand a PDF before applying other tools."
+Use this as a first step to understand a PDF before applying other tools.
+
+Source format: each element must be one of {\"path\": \"/absolute/path.pdf\"}, {\"url\": \"https://...\"}, {\"base64\": \"...\"}, or {\"cache_key\": \"...\"}"
     )]
     async fn summarize_structure(
         &self,
